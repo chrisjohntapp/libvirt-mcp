@@ -16,10 +16,10 @@ pytest tests/test_server.py -v
 
 ## Integration tests
 
-Requires SSH access to `lionsteel.coalcreek.lan` with key-based auth.
+Requires SSH access to a libvirt host with key-based auth.
 
 ```bash
-LIBVIRT_TEST_HOST=lionsteel.coalcreek.lan pytest tests/test_integration.py -v
+LIBVIRT_TEST_HOST=your-host.example.com pytest tests/test_integration.py -v
 ```
 
 ## All tests
@@ -29,5 +29,5 @@ LIBVIRT_TEST_HOST=lionsteel.coalcreek.lan pytest tests/test_integration.py -v
 pytest tests/test_server.py
 
 # All including integration
-LIBVIRT_TEST_HOST=lionsteel.coalcreek.lan pytest tests/ -v
+LIBVIRT_TEST_HOST=your-host.example.com pytest tests/ -v
 ```

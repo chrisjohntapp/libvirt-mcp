@@ -94,6 +94,13 @@ Or using `uv run` if you installed via uv:
 | `libvirt_disconnect_host` | Close connection to a host |
 | `libvirt_list_hosts` | Show all active host connections |
 
+### VM Creation
+
+| Tool | Description |
+|------|-------------|
+| `libvirt_create_vm` | Create a VM from a template (provision disk, define, start) |
+| `libvirt_list_templates` | List available VM templates |
+
 ### Domain Lifecycle
 
 | Tool | Description | Destructive? |
@@ -109,6 +116,44 @@ Or using `uv run` if you installed via uv:
 | `libvirt_suspend_domain` | Pause/freeze a running VM | No |
 | `libvirt_resume_domain` | Unpause a suspended VM | No |
 | `libvirt_undefine_domain` | Remove VM definition from libvirt | **Yes** |
+
+## Local Environment Config
+
+Create a `.lab/hosts.json` file to define your libvirt hosts (this directory is
+git-ignored):
+
+```bash
+mkdir -p .lab
+```
+
+```json
+{
+  "hosts": [
+    {
+      "host": "myhost.example.com",
+      "alias": "myhost"
+    }
+  ]
+}
+```
+
+Each entry supports the same fields as `libvirt_connect_host`: `host` (required),
+`alias` (required), `user` (optional), `port` (optional), `ssh_key_path` (optional).
+
+## Templates
+
+VM templates are JSON files in the `templates/` directory. Two are included:
+
+- `default` -- basic KVM VM with a new empty 10 GB disk
+- `suse-leap-micro` -- copies an openSUSE Leap Micro base image
+
+Create your own by adding a JSON file to `templates/`. See existing templates for the schema.
+
+### Creating a VM
+
+> "Create a VM called 'web01' on lab using the default template with 2 vCPUs and 2048 MB RAM"
+
+This provisions the disk on the remote host via SSH, generates domain XML, defines and starts the VM.
 
 ## Example conversation with Claude
 

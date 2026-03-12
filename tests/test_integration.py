@@ -2,7 +2,7 @@
 Integration tests for server.py against a real libvirt host.
 
 Set LIBVIRT_TEST_HOST to run these tests:
-    LIBVIRT_TEST_HOST=lionsteel.coalcreek.lan pytest tests/test_integration.py -v
+    LIBVIRT_TEST_HOST=your-host.example.com pytest tests/test_integration.py -v
 """
 
 import os
@@ -17,11 +17,18 @@ from server import (
     libvirt_list_domains,
     libvirt_get_domain_info,
     libvirt_get_domain_xml,
+    libvirt_create_vm,
+    libvirt_destroy_domain,
+    libvirt_undefine_domain,
+    libvirt_list_templates,
+    _ssh_run,
+    _parse_uri_parts,
     ConnectHostInput,
     HostInput,
     DomainInput,
     ListDomainsInput,
     DomainInfoInput,
+    CreateVMInput,
     ResponseFormat,
 )
 
@@ -30,7 +37,7 @@ ALIAS = "integration-test"
 
 pytestmark = pytest.mark.skipif(
     not INTEGRATION_HOST,
-    reason="Set LIBVIRT_TEST_HOST=lionsteel.coalcreek.lan to run integration tests",
+    reason="Set LIBVIRT_TEST_HOST to run integration tests",
 )
 
 
@@ -107,3 +114,41 @@ async def test_get_domain_xml_for_first_domain(connected):
     result = await libvirt_get_domain_xml(DomainInput(alias=ALIAS, domain=first_name))
     assert result.strip().startswith("<domain")
     assert first_name in result
+
+
+async def test_list_templates():
+    result = await libvirt_list_templates()
+    assert "default" in result
+    assert "suse-leap-micro" in result
+
+
+TEST_VM_NAME = "mcp-integration-test-vm"
+
+
+async def test_create_and_cleanup_vm(connected):
+    """Create a small VM using default template, verify it exists, then clean up."""
+    # Create VM
+    result = await libvirt_create_vm(
+        CreateVMInput(alias=ALIAS, name=TEST_VM_NAME, disk_size_gb=1)
+    )
+    assert "Error" not in result, f"Create VM failed: {result}"
+    assert TEST_VM_NAME in result
+
+    # Verify it appears in domain list
+    list_result = await libvirt_list_domains(
+        ListDomainsInput(alias=ALIAS, response_format=ResponseFormat.JSON)
+    )
+    data = json.loads(list_result)
+    names = [d["name"] for d in data["domains"]]
+    assert TEST_VM_NAME in names
+
+    # Cleanup: destroy, undefine, remove disk
+    await libvirt_destroy_domain(DomainInput(alias=ALIAS, domain=TEST_VM_NAME))
+    result = await libvirt_undefine_domain(DomainInput(alias=ALIAS, domain=TEST_VM_NAME))
+    assert "undefined" in result
+
+    # Remove the disk via SSH
+    conn = server._connections[ALIAS]
+    uri = conn.getURI()
+    host, user, port, ssh_key = _parse_uri_parts(uri)
+    await _ssh_run(host, user, port, ssh_key, f"sudo rm -f /var/lib/libvirt/images/{TEST_VM_NAME}.qcow2")

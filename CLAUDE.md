@@ -3,7 +3,7 @@ An MCP server that uses libvirt-python to provide tools to manage VMs on LibVirt
 
 
 # Testing
-- Robust unit testing should be maintained at all times. There is a test machine available at lionsteel.coalcreek.lan.  Final testing should be tested against this machine.
+- Robust unit testing should be maintained at all times. Integration tests should be run against a real libvirt host via the LIBVIRT_TEST_HOST env var.
 
 
 ## Approach

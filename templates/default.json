@@ -1,0 +1,16 @@
+{
+  "description": "Basic KVM VM with new empty disk",
+  "vcpus": 1,
+  "memory_mb": 1024,
+  "disk": {
+    "source": "create",
+    "size_gb": 10,
+    "bus": "virtio"
+  },
+  "os": {
+    "type": "hvm",
+    "arch": "x86_64",
+    "boot_dev": "hd"
+  },
+  "network_bridge": "br0"
+}
