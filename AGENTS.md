@@ -1,4 +1,21 @@
-# AGENTS.md
+# Project Goal
+An MCP server that uses libvirt-python to provide tools to manage VMs on LibVirt hosts.
+
+# Testing
+- Robust unit testing should be maintained at all times.
+- Integration tests should be run against a real libvirt host via the LIBVIRT_TEST_HOST env var.
+
+
+## Coding standards
+
+- Use latest versions of libraries and idiomatic approaches as of today.
+- Keep it simple - NEVER over-engineer, ALWAYS simplify, NO unnecessary defensive programming. No extra features - focus on simplicity.
+- Be concise. Keep README minimal. IMPORTANT: no emojis ever.
+- When hitting issues, always identify root cause before trying a fix. Do not guess. Prove with evidence, then fix the root cause.
+
+## Working documentation
+
+- All documents for planning and executing this project will be in the docs/ directory.
 
 ## VM Operations Boundary (Mandatory)
 
