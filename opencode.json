@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "libvirt-mcp": {
+      "type": "local",
+      "command": ["uv", "run", "--directory", "/home/tappy/projects/libvirt-mcp", "python", "server.py"],
+      "enabled": true
+    }
+  }
+}

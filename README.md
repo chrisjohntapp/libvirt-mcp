@@ -101,6 +101,18 @@ Or using `uv run` if you installed via uv:
 | `libvirt_create_vm` | Create a VM from a template (provision disk, define, start) |
 | `libvirt_list_templates` | List available VM templates |
 
+### VM Migration
+
+| Tool | Description |
+|------|-------------|
+| `libvirt_migrate_vm` | Start offline migration as an async job (shutdown, copy disks, define/start target) |
+| `libvirt_get_migration_status` | Get migration job status, phase timeline, and final result/error |
+
+Migration flow:
+1. Call `libvirt_migrate_vm` with `confirm=false` and capture `job_id`
+2. Poll with `libvirt_get_migration_status` until status is `succeeded` or `failed`
+3. Call `libvirt_migrate_vm` with `confirm=true` to clean up source definition/disks
+
 ### Domain Lifecycle
 
 | Tool | Description | Destructive? |

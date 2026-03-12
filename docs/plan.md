@@ -1,170 +1,77 @@
 # Project Plan
 
-## Feature: Create VM (high-level tool)
+## Current State
 
-A single `libvirt_create_vm` tool that takes a VM name, an optional template,
-and optional overrides -- then provisions storage, generates XML, defines the
-domain, and starts it.
+The MCP server is functional with the following tools implemented and tested:
 
-### Design
+### Connection management
+- `libvirt_connect_host` -- connect to a remote libvirt host via SSH
+- `libvirt_disconnect_host` -- close a connection
+- `libvirt_list_hosts` -- list active connections
 
-**New tool**: `libvirt_create_vm`
+### Domain lifecycle
+- `libvirt_list_domains` -- list VMs (with optional state filter, markdown/json output)
+- `libvirt_get_domain_info` -- detailed info for a single domain
+- `libvirt_get_domain_xml` -- raw XML definition
+- `libvirt_start_domain`
+- `libvirt_shutdown_domain` -- graceful ACPI shutdown
+- `libvirt_destroy_domain` -- force stop
+- `libvirt_reboot_domain`
+- `libvirt_suspend_domain`
+- `libvirt_resume_domain`
+- `libvirt_define_domain` -- define from raw XML
+- `libvirt_undefine_domain` -- remove domain definition (keeps disks)
 
-Parameters:
-- `alias` (required) -- host alias (existing pattern)
-- `name` (required) -- VM name
-- `template` (optional) -- template name; defaults to `"default"`
-- `vcpus` (optional) -- override template vcpus
-- `memory_mb` (optional) -- override template memory
-- `disk_size_gb` (optional) -- override disk size (only for new-disk templates)
-- `network_bridge` (optional) -- override bridge device; defaults to `br0`
-- `boot_iso` (optional) -- ISO path for boot/install media (CDROM)
+### VM creation and deletion
+- `libvirt_create_vm` -- create VM from template with optional overrides
+- `libvirt_delete_vm` -- destroy + undefine + delete disk files (with confirm/preview)
+- `libvirt_list_templates` -- list available VM templates
 
-**Templates**: stored as JSON files in `templates/` directory at project root.
-Each template defines a base VM spec. Users can add/edit templates manually.
+### VM migration
+- `libvirt_migrate_vm` -- offline migration started as an async job (stop, copy disks, define+start on target)
+- `libvirt_get_migration_status` -- check async migration status, current phase, timeline, and result/error
 
-Template schema:
-```json
-{
-  "description": "openSUSE Leap Micro 6.1",
-  "vcpus": 2,
-  "memory_mb": 2048,
-  "disk": {
-    "source": "copy",
-    "source_path": "/var/lib/libvirt/images/openSUSE-Leap-Micro.x86_64-Default-qcow.qcow2",
-    "bus": "virtio"
-  },
-  "os": {
-    "type": "hvm",
-    "arch": "x86_64",
-    "boot_dev": "hd"
-  },
-  "network_bridge": "br0"
-}
-```
+### ISO management
+- `libvirt_list_isos` -- list ISOs in /var/lib/libvirt/images/ on a host
 
-Disk source types:
-- `"copy"` -- copy an existing qcow2 from `source_path` to
-  `/var/lib/libvirt/images/<vm-name>.qcow2`
-- `"create"` -- create a new empty qcow2 of `disk_size_gb`
-  at `/var/lib/libvirt/images/<vm-name>.qcow2`
+### Key implementation details
 
-**New tool**: `libvirt_list_templates`
+**Templates** (`templates/` directory):
+- `default.json` -- 1 vcpu, 1024 MB RAM, create new 10 GB qcow2, boot hd, bridge br0
+- `suse-leap-micro.json` -- 2 vcpus, 2048 MB RAM, copy openSUSE Leap Micro image
 
-Parameters:
-- (none)
+**ISO discovery** (in `libvirt_create_vm`):
+- When `boot_iso` is a partial/fuzzy name (not an absolute path), the server searches
+  `/var/lib/libvirt/images/*.iso` on the host for matches (all words, case-insensitive).
+- Single match: used automatically. Multiple matches: listed for user to choose.
+  No matches: error with list of available ISOs.
 
-Returns: list of available template names with descriptions.
+**Storage provisioning** via SSH:
+- `"create"` -- `qemu-img create -f qcow2` on remote host
+- `"copy"` -- `cp` from source path on remote host
 
-**Storage provisioning** (runs on remote host via SSH):
+**Lab hosts**: defined in `.lab/hosts.json` (gitignored).
 
-For `"copy"` disk source:
-- SSH to host, run `cp <source_path> /var/lib/libvirt/images/<name>.qcow2`
+### Test coverage
 
-For `"create"` disk source:
-- SSH to host, run `qemu-img create -f qcow2 /var/lib/libvirt/images/<name>.qcow2 <size>G`
+- `tests/test_server.py` -- unit tests for connection management, domain lifecycle, delete VM
+- `tests/test_create_vm.py` -- unit tests for templates, XML generation, disk provisioning,
+  create VM, ISO discovery (39 tests)
+- `tests/test_migrate_vm.py` -- unit tests for VM migration: XML rewriting, scp helpers,
+  migrate tool async job lifecycle + cleanup (22 tests)
+- `tests/test_integration.py` -- integration tests against real libvirt host (via LIBVIRT_TEST_HOST)
 
-Note: We use SSH commands rather than libvirt storage pool APIs for simplicity.
-The connection URI already provides SSH access to the host. We'll use
-`asyncio.create_subprocess_exec` with ssh to run commands on the remote host.
+All 121 unit tests passing.
 
-**XML generation**: Build domain XML from template + overrides using string
-formatting or xml.etree. Keep it simple -- a Python function that takes the
-resolved spec dict and returns XML string.
 
-### File structure
+## Completed features
 
-```
-templates/
-  default.json          -- basic KVM VM (create new disk)
-  suse-leap-micro.json  -- copy openSUSE Leap Micro image
-server.py               -- add libvirt_create_vm + libvirt_list_templates tools
-                           add _load_template(), _provision_disk(), _build_domain_xml()
-tests/
-  test_create_vm.py     -- unit tests for create VM feature
-  test_server.py        -- existing (unchanged)
-  test_integration.py   -- add integration test for create VM
-```
-
-### Implementation steps (TDD -- tests first)
-
-#### Step 1: Templates infrastructure
-
-Tests first (`test_create_vm.py`):
-- `TestLoadTemplate`: test loading a valid template, missing template, default
-  template, template with overrides applied
-- `TestListTemplates`: test listing available templates
-
-Then implement:
-- `_load_template(name)` function that reads from `templates/` directory
-- `_apply_overrides(template, overrides)` to merge user overrides
-- `libvirt_list_templates` tool
-
-Success criteria: `uv run pytest tests/test_create_vm.py::TestLoadTemplate -v` passes.
-
-#### Step 2: XML generation
-
-Tests first:
-- `TestBuildDomainXml`: test XML output for a basic spec (name, vcpus, memory,
-  disk path, bridge), test with ISO CDROM, test with different arch
-
-Then implement:
-- `_build_domain_xml(spec)` function using xml.etree.ElementTree
-
-Success criteria: `uv run pytest tests/test_create_vm.py::TestBuildDomainXml -v` passes.
-
-#### Step 3: Disk provisioning
-
-Tests first:
-- `TestProvisionDisk`: test "create" mode builds correct qemu-img command,
-  test "copy" mode builds correct cp command, test error handling for failed
-  SSH command
-
-Then implement:
-- `_provision_disk(host, user, port, ssh_key, disk_spec, vm_name)` function
-  that runs remote commands via SSH subprocess
-- Helper `_ssh_run(host, user, port, ssh_key, command)` for remote execution
-
-Success criteria: `uv run pytest tests/test_create_vm.py::TestProvisionDisk -v` passes.
-
-#### Step 4: Create VM tool (integration of steps 1-3)
-
-Tests first:
-- `TestCreateVm`: test full happy path (mock template load, disk provision,
-  defineXML, create), test with overrides, test with boot ISO, test error
-  cases (template not found, disk provision fails, defineXML fails)
-
-Then implement:
-- `libvirt_create_vm` tool wiring everything together:
-  1. Load template + apply overrides
-  2. Provision disk on remote host
-  3. Build XML
-  4. `conn.defineXML(xml)`
-  5. `dom.create()` (start)
-  6. Return success message with VM details
-
-Success criteria: `uv run pytest tests/test_create_vm.py -v` all pass.
-
-#### Step 5: Integration test
-
-- Add test in `test_integration.py` that creates a small VM on the test host
-  using the default template, verifies it appears in domain list, then
-  cleans up (destroy + undefine + remove disk).
-
-Success criteria: Integration test passes against real host.
-
-#### Step 6: Documentation
-
-- Update README with new tools
-- Add example templates to `templates/`
-
-### Default templates to ship
-
-1. `default.json` -- 1 vcpu, 1024 MB RAM, create new 10 GB qcow2, boot hd,
-   bridge br0
-2. `suse-leap-micro.json` -- 2 vcpus, 2048 MB RAM, copy from
-   `/var/lib/libvirt/images/openSUSE-Leap-Micro.x86_64-Default-qcow.qcow2`,
-   boot hd, bridge br0
+1. Core domain management tools (connect, list, start, stop, etc.)
+2. Create VM from template with overrides, boot ISO, virt-viewer launch
+3. Delete VM with preview/confirm, disk cleanup
+4. ISO discovery -- fuzzy matching for boot_iso parameter
+5. `libvirt_list_isos` tool
+6. VM migration -- offline cold migration between hosts with confirm pattern
 
 
 ## Future TODOs (out of scope for initial release)
@@ -173,4 +80,3 @@ Success criteria: Integration test passes against real host.
 - Virtual network management tools
 - Snapshot tools (create, list, revert, delete)
 - Domain cloning helper
-- VM migration tool

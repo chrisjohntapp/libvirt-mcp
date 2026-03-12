@@ -8,8 +8,10 @@ import asyncio
 import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from uuid import uuid4
 
 import libvirt
 from pydantic import BaseModel, Field
@@ -25,6 +27,8 @@ logging.basicConfig(
 logger = logging.getLogger("libvirt_mcp")
 
 _connections: dict[str, libvirt.virConnect] = {}
+_migration_jobs: dict[str, dict] = {}
+_migration_jobs_lock = asyncio.Lock()
 
 
 def _get_conn(host_alias: str) -> libvirt.virConnect:
@@ -32,8 +36,7 @@ def _get_conn(host_alias: str) -> libvirt.virConnect:
     conn = _connections.get(host_alias)
     if conn is None:
         raise ValueError(
-            f"No connection found for '{host_alias}'. "
-            "Use libvirt_connect_host first."
+            f"No connection found for '{host_alias}'. Use libvirt_connect_host first."
         )
     try:
         conn.getVersion()
@@ -90,9 +93,7 @@ def _lookup_domain(conn: libvirt.virConnect, domain: str) -> libvirt.virDomain:
     try:
         return conn.lookupByUUIDString(domain)
     except libvirt.libvirtError:
-        raise ValueError(
-            f"Domain '{domain}' not found by name or UUID on this host."
-        )
+        raise ValueError(f"Domain '{domain}' not found by name or UUID on this host.")
 
 
 def _format_error(e: Exception, context: str = "") -> str:
@@ -113,7 +114,9 @@ class ResponseFormat(str, Enum):
 _MODEL_CONFIG = {"str_strip_whitespace": True, "extra": "forbid"}
 
 _ALIAS_FIELD = Field(..., description="Host alias", min_length=1, max_length=64)
-_DOMAIN_FIELD = Field(..., description="Domain name or UUID", min_length=1, max_length=256)
+_DOMAIN_FIELD = Field(
+    ..., description="Domain name or UUID", min_length=1, max_length=256
+)
 
 
 class ConnectHostInput(BaseModel):
@@ -168,7 +171,9 @@ class ListDomainsInput(BaseModel):
 class DefineVMInput(BaseModel):
     model_config = _MODEL_CONFIG
     alias: str = _ALIAS_FIELD
-    xml: str = Field(..., description="Full libvirt domain XML definition", min_length=10)
+    xml: str = Field(
+        ..., description="Full libvirt domain XML definition", min_length=10
+    )
 
 
 class DomainInfoInput(BaseModel):
@@ -274,7 +279,11 @@ async def libvirt_list_hosts() -> str:
     if not _connections:
         return "No hosts connected. Use libvirt_connect_host to add one."
 
-    lines = ["# Connected LibVirt Hosts\n", "| Alias | Hostname | Status |", "|-------|----------|--------|"]
+    lines = [
+        "# Connected LibVirt Hosts\n",
+        "| Alias | Hostname | Status |",
+        "|-------|----------|--------|",
+    ]
     for alias, conn in list(_connections.items()):
         try:
             hostname = conn.getHostname()
@@ -302,13 +311,25 @@ async def libvirt_list_domains(params: ListDomainsInput) -> str:
         all_domains = await _run(conn.listAllDomains, 0)
 
         state_filter = (params.state_filter or "all").lower()
-        valid_filters = {"all", "running", "shutoff", "paused", "blocked", "crashed", "suspended (pm)", "shutting down", "no state"}
+        valid_filters = {
+            "all",
+            "running",
+            "shutoff",
+            "paused",
+            "blocked",
+            "crashed",
+            "suspended (pm)",
+            "shutting down",
+            "no state",
+        }
         if state_filter not in valid_filters:
             return f"Invalid state_filter '{state_filter}'. Valid values: {', '.join(sorted(valid_filters))}."
 
         summaries = [
-            s for dom in all_domains
-            if (s := _domain_summary(dom)) and (state_filter == "all" or s["state"] == state_filter)
+            s
+            for dom in all_domains
+            if (s := _domain_summary(dom))
+            and (state_filter == "all" or s["state"] == state_filter)
         ]
         summaries.sort(key=lambda x: x["name"])
 
@@ -317,7 +338,10 @@ async def libvirt_list_domains(params: ListDomainsInput) -> str:
             return f"No domains found on '{params.alias}'{suffix}."
 
         if params.response_format == ResponseFormat.JSON:
-            return json.dumps({"alias": params.alias, "count": len(summaries), "domains": summaries}, indent=2)
+            return json.dumps(
+                {"alias": params.alias, "count": len(summaries), "domains": summaries},
+                indent=2,
+            )
 
         lines = [f"# Domains on '{params.alias}' ({len(summaries)} found)\n"]
         lines.append("| Name | State | vCPUs | Memory (MB) | Persistent |")
@@ -641,13 +665,19 @@ async def _ssh_run(
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"SSH command failed (rc={proc.returncode}): {stderr.decode()}")
+        raise RuntimeError(
+            f"SSH command failed (rc={proc.returncode}): {stderr.decode()}"
+        )
     return stdout.decode()
 
 
 async def _provision_disk(
-    host: str, user: str, port: int, ssh_key: str | None,
-    disk_spec: dict, vm_name: str,
+    host: str,
+    user: str,
+    port: int,
+    ssh_key: str | None,
+    disk_spec: dict,
+    vm_name: str,
 ) -> str:
     """Provision a disk on the remote host. Returns the disk path."""
     disk_path = f"/var/lib/libvirt/images/{vm_name}.qcow2"
@@ -677,10 +707,20 @@ def _parse_uri_parts(uri: str) -> tuple[str, str, int, str | None]:
 
 
 async def _find_isos(
-    host: str, user: str, port: int, ssh_key: str | None, pattern: str,
+    host: str,
+    user: str,
+    port: int,
+    ssh_key: str | None,
+    pattern: str,
 ) -> list[str]:
     """Find ISOs in /var/lib/libvirt/images/ matching pattern (all words, case-insensitive)."""
-    output = await _ssh_run(host, user, port, ssh_key, "ls /var/lib/libvirt/images/*.iso 2>/dev/null || true")
+    output = await _ssh_run(
+        host,
+        user,
+        port,
+        ssh_key,
+        "ls /var/lib/libvirt/images/*.iso 2>/dev/null || true",
+    )
     all_isos = [line.strip() for line in output.splitlines() if line.strip()]
     words = pattern.lower().split()
     return [iso for iso in all_isos if all(w in iso.lower() for w in words)]
@@ -689,21 +729,42 @@ async def _find_isos(
 class CreateVMInput(BaseModel):
     model_config = _MODEL_CONFIG
     alias: str = _ALIAS_FIELD
-    name: str = Field(..., description="VM name (required -- must be explicitly provided by the user, never auto-generated)", min_length=1, max_length=64)
-    template: str | None = Field(default=None, description="Template name (default: 'default')")
+    name: str = Field(
+        ...,
+        description="VM name (required -- must be explicitly provided by the user, never auto-generated)",
+        min_length=1,
+        max_length=64,
+    )
+    template: str | None = Field(
+        default=None, description="Template name (default: 'default')"
+    )
     vcpus: int | None = Field(default=None, description="Override vCPUs", ge=1, le=256)
-    memory_mb: int | None = Field(default=None, description="Override memory in MB", ge=64)
-    disk_size_gb: int | None = Field(default=None, description="Override disk size in GB", ge=1)
-    network_bridge: str | None = Field(default=None, description="Override bridge device")
-    boot_iso: str | None = Field(default=None, description="ISO path for boot/install media")
-    open_viewer: bool = Field(default=True, description="Auto-open virt-viewer console after creation")
+    memory_mb: int | None = Field(
+        default=None, description="Override memory in MB", ge=64
+    )
+    disk_size_gb: int | None = Field(
+        default=None, description="Override disk size in GB", ge=1
+    )
+    network_bridge: str | None = Field(
+        default=None, description="Override bridge device"
+    )
+    boot_iso: str | None = Field(
+        default=None, description="ISO path for boot/install media"
+    )
+    open_viewer: bool = Field(
+        default=True, description="Auto-open virt-viewer console after creation"
+    )
 
 
 async def _launch_virt_viewer(uri: str, vm_name: str) -> bool:
     """Launch virt-viewer as a detached background process. Returns True on success."""
     try:
         await asyncio.create_subprocess_exec(
-            "virt-viewer", "--wait", "--connect", uri, vm_name,
+            "virt-viewer",
+            "--wait",
+            "--connect",
+            uri,
+            vm_name,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -770,7 +831,9 @@ async def libvirt_create_vm(params: CreateVMInput) -> str:
         # 2. Provision disk on remote host
         uri = conn.getURI()
         host, user, port, ssh_key = _parse_uri_parts(uri)
-        disk_path = await _provision_disk(host, user, port, ssh_key, spec["disk"], params.name)
+        disk_path = await _provision_disk(
+            host, user, port, ssh_key, spec["disk"], params.name
+        )
 
         # 3. Build XML
         # 3. Resolve boot ISO
@@ -903,14 +966,430 @@ async def libvirt_delete_vm(params: DeleteVmInput) -> str:
 
         result = f"VM '{name}' deleted from '{params.alias}'.\n"
         if deleted:
-            result += "  Disks removed:\n" + "\n".join(f"    - {d}" for d in deleted) + "\n"
+            result += (
+                "  Disks removed:\n" + "\n".join(f"    - {d}" for d in deleted) + "\n"
+            )
         if errors:
-            result += "  Disk removal errors:\n" + "\n".join(f"    - {e}" for e in errors) + "\n"
+            result += (
+                "  Disk removal errors:\n"
+                + "\n".join(f"    - {e}" for e in errors)
+                + "\n"
+            )
         if not disks:
             result += "  No disk files to remove.\n"
         return result
     except Exception as e:
         return _format_error(e, f"deleting VM '{params.domain}'")
+
+
+def _rewrite_disk_paths(xml: str, path_map: dict[str, str]) -> str:
+    """Rewrite disk source paths in domain XML and strip UUID."""
+    root = ET.fromstring(xml)
+    uuid_elem = root.find("uuid")
+    if uuid_elem is not None:
+        root.remove(uuid_elem)
+    for source in root.findall(".//disk[@device='disk']/source"):
+        f = source.get("file")
+        if f and f in path_map:
+            source.set("file", path_map[f])
+    return ET.tostring(root, encoding="unicode")
+
+
+async def _scp_between_hosts(
+    src_host: str,
+    src_user: str,
+    src_port: int,
+    src_key: str | None,
+    dst_host: str,
+    dst_user: str,
+    dst_port: int,
+    dst_key: str | None,
+    src_path: str,
+    dst_path: str,
+) -> None:
+    """Copy a file between two remote hosts. Tries direct scp, falls back to local relay."""
+    # Try direct: ssh into source, scp to target
+    scp_cmd = (
+        f"sudo scp -o StrictHostKeyChecking=no "
+        f"-P {dst_port} {src_path} {dst_user}@{dst_host}:{dst_path}"
+    )
+    try:
+        await _ssh_run(src_host, src_user, src_port, src_key, scp_cmd)
+        return
+    except RuntimeError:
+        logger.info("Direct scp failed, falling back to local relay")
+
+    # Fallback: use shell pipe so the OS handles the plumbing
+    # ssh source "sudo cat <path>" | ssh target "sudo tee <path> > /dev/null"
+    src_ssh = "ssh -o StrictHostKeyChecking=no -o BatchMode=yes"
+    if src_key:
+        src_ssh += f" -i {src_key}"
+    src_ssh += f" -p {src_port} {src_user}@{src_host} 'sudo cat {src_path}'"
+
+    dst_ssh = "ssh -o StrictHostKeyChecking=no -o BatchMode=yes"
+    if dst_key:
+        dst_ssh += f" -i {dst_key}"
+    dst_ssh += f" -p {dst_port} {dst_user}@{dst_host} 'sudo tee {dst_path} > /dev/null'"
+
+    cmd = f"{src_ssh} | {dst_ssh}"
+    proc = await asyncio.create_subprocess_shell(
+        cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Relay transfer failed: {stderr.decode()}")
+
+
+class MigrateVMInput(BaseModel):
+    model_config = _MODEL_CONFIG
+    source_alias: str = Field(
+        ...,
+        description="Source host alias (must be connected)",
+        min_length=1,
+        max_length=64,
+    )
+    target_alias: str = Field(
+        ...,
+        description="Target host alias (must be connected)",
+        min_length=1,
+        max_length=64,
+    )
+    domain: str = _DOMAIN_FIELD
+    shutdown_timeout_seconds: int = Field(
+        default=30,
+        description="Seconds to wait for graceful shutdown before force-stop",
+        ge=1,
+        le=3600,
+    )
+    disk_copy_timeout_seconds: int = Field(
+        default=3600,
+        description="Seconds allowed for each disk copy before failing migration",
+        ge=30,
+        le=86400,
+    )
+    confirm: bool = Field(
+        default=False,
+        description="false=migrate VM to target; true=clean up source after migration",
+    )
+
+
+class MigrationStatusInput(BaseModel):
+    model_config = _MODEL_CONFIG
+    job_id: str = Field(
+        ..., description="Migration job ID", min_length=1, max_length=128
+    )
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _migration_job_create(params: MigrateVMInput) -> str:
+    job_id = str(uuid4())
+    async with _migration_jobs_lock:
+        _migration_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "source_alias": params.source_alias,
+            "target_alias": params.target_alias,
+            "domain": params.domain,
+            "created_at": _utc_now_iso(),
+            "started_at": None,
+            "finished_at": None,
+            "phase": "queued",
+            "phases": [{"phase": "queued", "at": _utc_now_iso()}],
+            "result": None,
+            "error": None,
+        }
+    return job_id
+
+
+async def _migration_job_mark_phase(job_id: str, phase: str) -> None:
+    async with _migration_jobs_lock:
+        job = _migration_jobs.get(job_id)
+        if job is None:
+            return
+        job["phase"] = phase
+        job["phases"].append({"phase": phase, "at": _utc_now_iso()})
+
+
+async def _migration_job_mark_running(job_id: str) -> None:
+    async with _migration_jobs_lock:
+        job = _migration_jobs.get(job_id)
+        if job is None:
+            return
+        now = _utc_now_iso()
+        job["status"] = "running"
+        job["phase"] = "precheck"
+        job["started_at"] = now
+        job["phases"].append({"phase": "precheck", "at": now})
+
+
+async def _migration_job_mark_success(job_id: str, result: str) -> None:
+    async with _migration_jobs_lock:
+        job = _migration_jobs.get(job_id)
+        if job is None:
+            return
+        now = _utc_now_iso()
+        job["status"] = "succeeded"
+        job["phase"] = "done"
+        job["finished_at"] = now
+        job["result"] = result
+        job["phases"].append({"phase": "done", "at": now})
+
+
+async def _migration_job_mark_failure(job_id: str, error: str) -> None:
+    async with _migration_jobs_lock:
+        job = _migration_jobs.get(job_id)
+        if job is None:
+            return
+        now = _utc_now_iso()
+        job["status"] = "failed"
+        job["phase"] = "failed"
+        job["finished_at"] = now
+        job["error"] = error
+        job["phases"].append({"phase": "failed", "at": now})
+
+
+async def _migration_job_get(job_id: str) -> dict | None:
+    async with _migration_jobs_lock:
+        job = _migration_jobs.get(job_id)
+        if job is None:
+            return None
+        return copy.deepcopy(job)
+
+
+async def _run_migration_job(job_id: str, params: MigrateVMInput) -> None:
+    await _migration_job_mark_running(job_id)
+    try:
+        result = await _migrate_vm_offline(params, job_id)
+    except Exception as e:
+        await _migration_job_mark_failure(job_id, _format_error(e, "migrating VM"))
+        return
+    await _migration_job_mark_success(job_id, result)
+
+
+async def _migrate_vm_offline(params: MigrateVMInput, job_id: str | None = None) -> str:
+    src_conn = _get_conn(params.source_alias)
+    tgt_conn = _get_conn(params.target_alias)
+
+    if job_id:
+        await _migration_job_mark_phase(job_id, "precheck")
+
+    dom = await _run(lambda: _lookup_domain(src_conn, params.domain))
+    name = dom.name()
+
+    # Check domain state on target for idempotent retry handling.
+    try:
+        tgt_dom = await _run(lambda: tgt_conn.lookupByName(name))
+        src_state = (await _run(dom.info))[0]
+        tgt_state = (await _run(tgt_dom.info))[0]
+        if src_state == libvirt.VIR_DOMAIN_SHUTOFF and tgt_state in (
+            libvirt.VIR_DOMAIN_RUNNING,
+            libvirt.VIR_DOMAIN_PAUSED,
+        ):
+            return (
+                f"Migration already completed for '{name}'.\n"
+                f"  Target '{params.target_alias}' is {_domain_state_str(tgt_state)}.\n"
+                f"  Source '{params.source_alias}' is {_domain_state_str(src_state)}.\n"
+                "Source cleanup is still pending. Call again with confirm=true to clean up source."
+            )
+        return (
+            f"Error: Domain '{name}' already exists on target '{params.target_alias}'."
+        )
+    except libvirt.libvirtError:
+        pass
+
+    # Stop if running/paused.
+    info = dom.info()
+    if info[0] in (libvirt.VIR_DOMAIN_RUNNING, libvirt.VIR_DOMAIN_PAUSED):
+        if job_id:
+            await _migration_job_mark_phase(job_id, "shutdown")
+        timeout_s = params.shutdown_timeout_seconds
+        try:
+            await _run(dom.shutdown)
+            deadline = asyncio.get_running_loop().time() + timeout_s
+            while True:
+                state = (await _run(dom.info))[0]
+                if state == libvirt.VIR_DOMAIN_SHUTOFF:
+                    break
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError(
+                        f"domain still {_domain_state_str(state)} after {timeout_s}s"
+                    )
+                await asyncio.sleep(1)
+        except Exception as shutdown_error:
+            logger.info(
+                "Graceful shutdown failed for '%s' (%s); force-stopping",
+                name,
+                shutdown_error,
+            )
+            await _run(dom.destroy)
+
+    if job_id:
+        await _migration_job_mark_phase(job_id, "collect_domain_xml")
+    xml = await _run(dom.XMLDesc, libvirt.VIR_DOMAIN_XML_INACTIVE)
+    disks = _get_domain_disks(dom)
+
+    src_host, src_user, src_port, src_key = _parse_uri_parts(src_conn.getURI())
+    dst_host, dst_user, dst_port, dst_key = _parse_uri_parts(tgt_conn.getURI())
+
+    for disk_path in disks:
+        if job_id:
+            await _migration_job_mark_phase(job_id, f"copy_disk:{disk_path}")
+        await asyncio.wait_for(
+            _scp_between_hosts(
+                src_host,
+                src_user,
+                src_port,
+                src_key,
+                dst_host,
+                dst_user,
+                dst_port,
+                dst_key,
+                disk_path,
+                disk_path,
+            ),
+            timeout=params.disk_copy_timeout_seconds,
+        )
+
+    if job_id:
+        await _migration_job_mark_phase(job_id, "define_target")
+    path_map = {d: d for d in disks}
+    new_xml = _rewrite_disk_paths(xml, path_map)
+    new_dom = await _run(lambda: tgt_conn.defineXML(new_xml))
+
+    if job_id:
+        await _migration_job_mark_phase(job_id, "start_target")
+    await _run(new_dom.create)
+
+    disk_list = "\n".join(f"  - {d}" for d in disks) if disks else "  (none)"
+    return (
+        f"VM '{name}' migrated to '{params.target_alias}'.\n"
+        f"  Disks transferred:\n{disk_list}\n"
+        f"  UUID on target: {new_dom.UUIDString()}\n\n"
+        f"Source still has the old definition and disk files.\n"
+        f"Call again with confirm=true to clean up source."
+    )
+
+
+@mcp.tool(
+    name="libvirt_migrate_vm",
+    annotations={
+        "title": "Migrate VM Between Hosts",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def libvirt_migrate_vm(params: MigrateVMInput) -> str:
+    """Offline-migrate a VM from one host to another: stop, copy disks, define+start on target.
+
+    Call with confirm=false to perform the migration.
+    Then call with confirm=true to clean up the source (undefine + delete disks).
+    """
+    try:
+        if not params.confirm:
+            # --- Start async migration job ---
+            _get_conn(params.source_alias)
+            _get_conn(params.target_alias)
+            src_conn = _get_conn(params.source_alias)
+            await _run(lambda: _lookup_domain(src_conn, params.domain))
+            job_id = await _migration_job_create(params)
+            asyncio.create_task(_run_migration_job(job_id, params))
+            return (
+                f"Migration started for '{params.domain}' from '{params.source_alias}' to '{params.target_alias}'.\n"
+                f"  Job ID: {job_id}\n"
+                "Use libvirt_get_migration_status with this job_id to track progress."
+            )
+        else:
+            # --- Clean up source ---
+            src_conn = _get_conn(params.source_alias)
+            dom = await _run(lambda: _lookup_domain(src_conn, params.domain))
+            name = dom.name()
+            info = dom.info()
+
+            if info[0] in (libvirt.VIR_DOMAIN_RUNNING, libvirt.VIR_DOMAIN_PAUSED):
+                return (
+                    f"Error: Domain '{name}' is still running on source. Stop it first."
+                )
+
+            disks = _get_domain_disks(dom)
+            await _run(dom.undefine)
+
+            # Delete disk files via SSH
+            src_host, src_user, src_port, src_key = _parse_uri_parts(src_conn.getURI())
+            deleted = []
+            errors = []
+            for disk_path in disks:
+                try:
+                    await _ssh_run(
+                        src_host, src_user, src_port, src_key, f"sudo rm -f {disk_path}"
+                    )
+                    deleted.append(disk_path)
+                except Exception as e:
+                    errors.append(f"{disk_path}: {e}")
+
+            result = (
+                f"Source cleanup complete for '{name}' on '{params.source_alias}'.\n"
+            )
+            if deleted:
+                result += (
+                    "  Disks removed:\n"
+                    + "\n".join(f"    - {d}" for d in deleted)
+                    + "\n"
+                )
+            if errors:
+                result += (
+                    "  Disk removal errors:\n"
+                    + "\n".join(f"    - {e}" for e in errors)
+                    + "\n"
+                )
+            if not disks:
+                result += "  No disk files to remove.\n"
+            return result
+
+    except Exception as e:
+        return _format_error(e, f"migrating VM '{params.domain}'")
+
+
+@mcp.tool(
+    name="libvirt_get_migration_status",
+    annotations={
+        "title": "Get VM Migration Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def libvirt_get_migration_status(params: MigrationStatusInput) -> str:
+    """Get status details for a migration started by libvirt_migrate_vm(confirm=false)."""
+    job = await _migration_job_get(params.job_id)
+    if job is None:
+        return f"Error: Migration job '{params.job_id}' not found."
+
+    lines = [
+        f"# Migration Job {job['job_id']}",
+        "",
+        f"- status: {job['status']}",
+        f"- phase: {job['phase']}",
+        f"- domain: {job['domain']}",
+        f"- source: {job['source_alias']}",
+        f"- target: {job['target_alias']}",
+        f"- created_at: {job['created_at']}",
+        f"- started_at: {job['started_at'] or '(pending)'}",
+        f"- finished_at: {job['finished_at'] or '(pending)'}",
+    ]
+    if job["error"]:
+        lines.append(f"- error: {job['error']}")
+    if job["result"]:
+        lines.extend(["", "## Result", job["result"]])
+    lines.extend(["", "## Phase Timeline"])
+    for entry in job["phases"]:
+        lines.append(f"- {entry['at']}: {entry['phase']}")
+    return "\n".join(lines)
 
 
 @mcp.tool(
@@ -931,7 +1410,9 @@ async def libvirt_list_isos(params: HostInput) -> str:
         host, user, port, ssh_key = _parse_uri_parts(uri)
         isos = await _find_isos(host, user, port, ssh_key, "")
         if not isos:
-            return f"No ISO files found in /var/lib/libvirt/images/ on '{params.alias}'."
+            return (
+                f"No ISO files found in /var/lib/libvirt/images/ on '{params.alias}'."
+            )
         lines = [f"# ISOs on '{params.alias}'\n"]
         for iso in sorted(isos):
             lines.append(f"- {iso}")
