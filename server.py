@@ -617,6 +617,10 @@ def _build_domain_xml(spec: dict) -> str:
     ET.SubElement(iface, "source", bridge=spec["network_bridge"])
     ET.SubElement(iface, "model", type="virtio")
 
+    # Graphics (spice) + video
+    ET.SubElement(devices, "graphics", type="vnc", autoport="yes")
+    ET.SubElement(devices, "video").append(ET.Element("model", type="virtio"))
+
     # Console
     ET.SubElement(devices, "serial", type="pty")
     ET.SubElement(devices, "console", type="pty")
@@ -672,16 +676,42 @@ def _parse_uri_parts(uri: str) -> tuple[str, str, int, str | None]:
     return host, user, port, ssh_key
 
 
+async def _find_isos(
+    host: str, user: str, port: int, ssh_key: str | None, pattern: str,
+) -> list[str]:
+    """Find ISOs in /var/lib/libvirt/images/ matching pattern (all words, case-insensitive)."""
+    output = await _ssh_run(host, user, port, ssh_key, "ls /var/lib/libvirt/images/*.iso 2>/dev/null || true")
+    all_isos = [line.strip() for line in output.splitlines() if line.strip()]
+    words = pattern.lower().split()
+    return [iso for iso in all_isos if all(w in iso.lower() for w in words)]
+
+
 class CreateVMInput(BaseModel):
     model_config = _MODEL_CONFIG
     alias: str = _ALIAS_FIELD
-    name: str = Field(..., description="VM name", min_length=1, max_length=64)
+    name: str = Field(..., description="VM name (required -- must be explicitly provided by the user, never auto-generated)", min_length=1, max_length=64)
     template: str | None = Field(default=None, description="Template name (default: 'default')")
     vcpus: int | None = Field(default=None, description="Override vCPUs", ge=1, le=256)
     memory_mb: int | None = Field(default=None, description="Override memory in MB", ge=64)
     disk_size_gb: int | None = Field(default=None, description="Override disk size in GB", ge=1)
     network_bridge: str | None = Field(default=None, description="Override bridge device")
     boot_iso: str | None = Field(default=None, description="ISO path for boot/install media")
+    open_viewer: bool = Field(default=True, description="Auto-open virt-viewer console after creation")
+
+
+async def _launch_virt_viewer(uri: str, vm_name: str) -> bool:
+    """Launch virt-viewer as a detached background process. Returns True on success."""
+    try:
+        await asyncio.create_subprocess_exec(
+            "virt-viewer", "--wait", "--connect", uri, vm_name,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        return True
+    except Exception as e:
+        logger.warning("Failed to launch virt-viewer: %s", e)
+        return False
 
 
 @mcp.tool(
@@ -719,7 +749,11 @@ async def libvirt_list_templates() -> str:
     },
 )
 async def libvirt_create_vm(params: CreateVMInput) -> str:
-    """Create a new VM: provision storage, generate XML, define and start the domain."""
+    """Create a new VM: provision storage, generate XML, define and start the domain.
+
+    The 'name' parameter is mandatory and must be explicitly provided by the user.
+    Do NOT invent or guess a name -- always ask the user if they have not specified one.
+    """
     try:
         conn = _get_conn(params.alias)
 
@@ -739,6 +773,22 @@ async def libvirt_create_vm(params: CreateVMInput) -> str:
         disk_path = await _provision_disk(host, user, port, ssh_key, spec["disk"], params.name)
 
         # 3. Build XML
+        # 3. Resolve boot ISO
+        boot_iso = params.boot_iso
+        if boot_iso and not boot_iso.startswith("/"):
+            matches = await _find_isos(host, user, port, ssh_key, boot_iso)
+            if len(matches) == 1:
+                boot_iso = matches[0]
+            elif len(matches) > 1:
+                iso_list = "\n".join(f"  - {m}" for m in matches)
+                return f"Multiple ISOs match '{params.boot_iso}':\n{iso_list}\n\nPlease specify the exact path."
+            else:
+                all_isos = await _find_isos(host, user, port, ssh_key, "")
+                if all_isos:
+                    iso_list = "\n".join(f"  - {m}" for m in all_isos)
+                    return f"No ISOs match '{params.boot_iso}'. Available ISOs:\n{iso_list}"
+                return f"No ISOs match '{params.boot_iso}' and no ISOs found in /var/lib/libvirt/images/."
+
         xml_spec = {
             "name": params.name,
             "vcpus": spec["vcpus"],
@@ -748,8 +798,8 @@ async def libvirt_create_vm(params: CreateVMInput) -> str:
             "os": spec["os"],
             "network_bridge": spec.get("network_bridge", "br0"),
         }
-        if params.boot_iso:
-            xml_spec["boot_iso"] = params.boot_iso
+        if boot_iso:
+            xml_spec["boot_iso"] = boot_iso
             xml_spec["os"]["boot_dev"] = "cdrom"
         xml = _build_domain_xml(xml_spec)
 
@@ -759,14 +809,135 @@ async def libvirt_create_vm(params: CreateVMInput) -> str:
         # 5. Start domain
         await _run(dom.create)
 
+        # 6. Optionally launch virt-viewer
+        viewer_msg = ""
+        if params.open_viewer:
+            if await _launch_virt_viewer(uri, params.name):
+                viewer_msg = "\n  virt-viewer: launched"
+            else:
+                viewer_msg = "\n  virt-viewer: failed to launch (is it installed?)"
+
         return (
             f"VM '{params.name}' created and started on '{params.alias}'.\n"
             f"  UUID: {dom.UUIDString()}\n"
             f"  vCPUs: {spec['vcpus']}, Memory: {spec['memory_mb']} MB\n"
-            f"  Disk: {disk_path}"
+            f"  Disk: {disk_path}{viewer_msg}"
         )
     except Exception as e:
         return _format_error(e, f"creating VM '{params.name}'")
+
+
+def _get_domain_disks(dom: libvirt.virDomain) -> list[str]:
+    """Extract disk file paths from a domain's XML definition."""
+    xml = dom.XMLDesc(0)
+    root = ET.fromstring(xml)
+    paths = []
+    for source in root.findall(".//disk[@device='disk']/source"):
+        f = source.get("file")
+        if f:
+            paths.append(f)
+    return paths
+
+
+class DeleteVmInput(BaseModel):
+    model_config = _MODEL_CONFIG
+    alias: str = _ALIAS_FIELD
+    domain: str = _DOMAIN_FIELD
+    confirm: bool = Field(
+        default=False,
+        description="Must be set to true to actually delete. When false, returns a preview of what will be deleted.",
+    )
+
+
+@mcp.tool(
+    name="libvirt_delete_vm",
+    annotations={
+        "title": "Delete VM (config + disks)",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def libvirt_delete_vm(params: DeleteVmInput) -> str:
+    """Permanently delete a VM: undefine the domain and remove its disk files.
+
+    Call with confirm=false first to preview what will be deleted.
+    Then call again with confirm=true to execute the deletion.
+    """
+    try:
+        conn = _get_conn(params.alias)
+        dom = await _run(lambda: _lookup_domain(conn, params.domain))
+        name = dom.name()
+        info = dom.info()
+        state = _domain_state_str(info[0])
+        disks = _get_domain_disks(dom)
+
+        if not params.confirm:
+            disk_list = "\n".join(f"  - {d}" for d in disks) if disks else "  (none)"
+            return (
+                f"DELETE PREVIEW for '{name}' on '{params.alias}':\n"
+                f"  State: {state}\n"
+                f"  Disk files to delete:\n{disk_list}\n\n"
+                "To proceed, call again with confirm=true."
+            )
+
+        # Stop if running
+        if info[0] in (libvirt.VIR_DOMAIN_RUNNING, libvirt.VIR_DOMAIN_PAUSED):
+            await _run(dom.destroy)
+
+        # Undefine
+        await _run(dom.undefine)
+
+        # Delete disk files via SSH
+        uri = conn.getURI()
+        host, user, port, ssh_key = _parse_uri_parts(uri)
+        deleted = []
+        errors = []
+        for disk_path in disks:
+            try:
+                await _ssh_run(host, user, port, ssh_key, f"sudo rm -f {disk_path}")
+                deleted.append(disk_path)
+            except Exception as e:
+                errors.append(f"{disk_path}: {e}")
+
+        result = f"VM '{name}' deleted from '{params.alias}'.\n"
+        if deleted:
+            result += "  Disks removed:\n" + "\n".join(f"    - {d}" for d in deleted) + "\n"
+        if errors:
+            result += "  Disk removal errors:\n" + "\n".join(f"    - {e}" for e in errors) + "\n"
+        if not disks:
+            result += "  No disk files to remove.\n"
+        return result
+    except Exception as e:
+        return _format_error(e, f"deleting VM '{params.domain}'")
+
+
+@mcp.tool(
+    name="libvirt_list_isos",
+    annotations={
+        "title": "List ISOs on Host",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def libvirt_list_isos(params: HostInput) -> str:
+    """List all ISO files in /var/lib/libvirt/images/ on a connected host."""
+    try:
+        conn = _get_conn(params.alias)
+        uri = conn.getURI()
+        host, user, port, ssh_key = _parse_uri_parts(uri)
+        isos = await _find_isos(host, user, port, ssh_key, "")
+        if not isos:
+            return f"No ISO files found in /var/lib/libvirt/images/ on '{params.alias}'."
+        lines = [f"# ISOs on '{params.alias}'\n"]
+        for iso in sorted(isos):
+            lines.append(f"- {iso}")
+        return "\n".join(lines)
+    except Exception as e:
+        return _format_error(e, "listing ISOs")
 
 
 if __name__ == "__main__":

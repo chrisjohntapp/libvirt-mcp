@@ -10,11 +10,13 @@ from unittest.mock import MagicMock, patch
 import libvirt
 
 import server
+from unittest.mock import AsyncMock
 from server import (
     _domain_state_str,
     _format_error,
     _domain_summary,
     _get_conn,
+    _get_domain_disks,
     _lookup_domain,
     libvirt_connect_host,
     libvirt_disconnect_host,
@@ -30,9 +32,11 @@ from server import (
     libvirt_resume_domain,
     libvirt_define_domain,
     libvirt_undefine_domain,
+    libvirt_delete_vm,
     ConnectHostInput,
     HostInput,
     DomainInput,
+    DeleteVmInput,
     ListDomainsInput,
     DefineVMInput,
     DomainInfoInput,
@@ -75,7 +79,12 @@ def make_mock_domain(
         dom.autostart.side_effect = libvirt.libvirtError("not supported")
     else:
         dom.autostart.return_value = int(autostart)
-    dom.XMLDesc.return_value = f"<domain type='kvm'><name>{name}</name></domain>"
+    dom.XMLDesc.return_value = (
+        f"<domain type='kvm'><name>{name}</name>"
+        f"<devices><disk type='file' device='disk'>"
+        f"<source file='/var/lib/libvirt/images/{name}.qcow2'/>"
+        f"<target dev='vda' bus='virtio'/></disk></devices></domain>"
+    )
     return dom
 
 
@@ -482,3 +491,83 @@ class TestUndefineDomain:
         dom.undefine.side_effect = libvirt.libvirtError("domain is running")
         result = await libvirt_undefine_domain(DomainInput(alias="lab", domain="test-vm"))
         assert "Error" in result
+
+
+class TestGetDomainDisks:
+    def test_extracts_disk_paths(self):
+        dom = make_mock_domain(name="myvm")
+        disks = _get_domain_disks(dom)
+        assert disks == ["/var/lib/libvirt/images/myvm.qcow2"]
+
+    def test_no_disks(self):
+        dom = make_mock_domain()
+        dom.XMLDesc.return_value = "<domain type='kvm'><name>test</name><devices></devices></domain>"
+        assert _get_domain_disks(dom) == []
+
+
+@pytest.mark.asyncio
+class TestDeleteVm:
+    async def test_dry_run(self):
+        conn = make_mock_conn()
+        server._connections["lab"] = conn
+        dom = make_mock_domain(name="del-me")
+        conn.lookupByName.return_value = dom
+        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=False))
+        assert "DELETE PREVIEW" in result
+        assert "del-me" in result
+        assert "/var/lib/libvirt/images/del-me.qcow2" in result
+        assert "confirm=true" in result
+        dom.destroy.assert_not_called()
+        dom.undefine.assert_not_called()
+
+    @patch("server._ssh_run", new_callable=AsyncMock)
+    async def test_confirmed_running_vm(self, mock_ssh):
+        conn = make_mock_conn()
+        conn.getURI.return_value = "qemu+ssh://user@host/system"
+        server._connections["lab"] = conn
+        dom = make_mock_domain(name="del-me", state=libvirt.VIR_DOMAIN_RUNNING)
+        conn.lookupByName.return_value = dom
+        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=True))
+        assert "deleted" in result
+        assert "del-me" in result
+        dom.destroy.assert_called_once()
+        dom.undefine.assert_called_once()
+        mock_ssh.assert_called_once()
+        assert "/var/lib/libvirt/images/del-me.qcow2" in mock_ssh.call_args[0][4]
+
+    @patch("server._ssh_run", new_callable=AsyncMock)
+    async def test_confirmed_shutoff_vm(self, mock_ssh):
+        conn = make_mock_conn()
+        conn.getURI.return_value = "qemu+ssh://user@host/system"
+        server._connections["lab"] = conn
+        dom = make_mock_domain(name="del-me", state=libvirt.VIR_DOMAIN_SHUTOFF)
+        conn.lookupByName.return_value = dom
+        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=True))
+        assert "deleted" in result
+        dom.destroy.assert_not_called()
+        dom.undefine.assert_called_once()
+
+    @patch("server._ssh_run", new_callable=AsyncMock)
+    async def test_no_disks(self, mock_ssh):
+        conn = make_mock_conn()
+        conn.getURI.return_value = "qemu+ssh://user@host/system"
+        server._connections["lab"] = conn
+        dom = make_mock_domain(name="nodisk", state=libvirt.VIR_DOMAIN_SHUTOFF)
+        dom.XMLDesc.return_value = "<domain type='kvm'><name>nodisk</name><devices></devices></domain>"
+        conn.lookupByName.return_value = dom
+        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="nodisk", confirm=True))
+        assert "No disk files" in result
+        mock_ssh.assert_not_called()
+
+    @patch("server._ssh_run", new_callable=AsyncMock)
+    async def test_disk_delete_error(self, mock_ssh):
+        mock_ssh.side_effect = RuntimeError("SSH failed")
+        conn = make_mock_conn()
+        conn.getURI.return_value = "qemu+ssh://user@host/system"
+        server._connections["lab"] = conn
+        dom = make_mock_domain(name="del-me", state=libvirt.VIR_DOMAIN_SHUTOFF)
+        conn.lookupByName.return_value = dom
+        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=True))
+        assert "deleted" in result
+        assert "errors" in result.lower()
+        dom.undefine.assert_called_once()

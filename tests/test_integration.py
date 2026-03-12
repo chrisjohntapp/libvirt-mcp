@@ -20,12 +20,14 @@ from server import (
     libvirt_create_vm,
     libvirt_destroy_domain,
     libvirt_undefine_domain,
+    libvirt_delete_vm,
     libvirt_list_templates,
     _ssh_run,
     _parse_uri_parts,
     ConnectHostInput,
     HostInput,
     DomainInput,
+    DeleteVmInput,
     ListDomainsInput,
     DomainInfoInput,
     CreateVMInput,
@@ -129,7 +131,7 @@ async def test_create_and_cleanup_vm(connected):
     """Create a small VM using default template, verify it exists, then clean up."""
     # Create VM
     result = await libvirt_create_vm(
-        CreateVMInput(alias=ALIAS, name=TEST_VM_NAME, disk_size_gb=1)
+        CreateVMInput(alias=ALIAS, name=TEST_VM_NAME, disk_size_gb=1, open_viewer=False)
     )
     assert "Error" not in result, f"Create VM failed: {result}"
     assert TEST_VM_NAME in result
@@ -142,13 +144,12 @@ async def test_create_and_cleanup_vm(connected):
     names = [d["name"] for d in data["domains"]]
     assert TEST_VM_NAME in names
 
-    # Cleanup: destroy, undefine, remove disk
-    await libvirt_destroy_domain(DomainInput(alias=ALIAS, domain=TEST_VM_NAME))
-    result = await libvirt_undefine_domain(DomainInput(alias=ALIAS, domain=TEST_VM_NAME))
-    assert "undefined" in result
+    # Preview delete
+    preview = await libvirt_delete_vm(DeleteVmInput(alias=ALIAS, domain=TEST_VM_NAME, confirm=False))
+    assert "DELETE PREVIEW" in preview
+    assert TEST_VM_NAME in preview
 
-    # Remove the disk via SSH
-    conn = server._connections[ALIAS]
-    uri = conn.getURI()
-    host, user, port, ssh_key = _parse_uri_parts(uri)
-    await _ssh_run(host, user, port, ssh_key, f"sudo rm -f /var/lib/libvirt/images/{TEST_VM_NAME}.qcow2")
+    # Delete VM (config + disks)
+    result = await libvirt_delete_vm(DeleteVmInput(alias=ALIAS, domain=TEST_VM_NAME, confirm=True))
+    assert "deleted" in result
+    assert "Error" not in result

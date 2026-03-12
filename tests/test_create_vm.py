@@ -12,6 +12,8 @@ import server
 from server import (
     _apply_overrides,
     _build_domain_xml,
+    _find_isos,
+    _launch_virt_viewer,
     _load_template,
     _provision_disk,
     _ssh_run,
@@ -290,3 +292,141 @@ class TestCreateVm:
                 CreateVMInput(alias="lab", name="newvm")
             )
         assert "Error" in result
+
+    async def test_open_viewer_default(self):
+        dom = make_mock_domain(name="newvm")
+        self.conn.defineXML.return_value = dom
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._launch_virt_viewer", new_callable=AsyncMock, return_value=True) as mock_viewer:
+                result = await libvirt_create_vm(
+                    CreateVMInput(alias="lab", name="newvm")
+                )
+        mock_viewer.assert_called_once()
+        assert "virt-viewer: launched" in result
+
+    async def test_open_viewer_false(self):
+        dom = make_mock_domain(name="newvm")
+        self.conn.defineXML.return_value = dom
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._launch_virt_viewer", new_callable=AsyncMock) as mock_viewer:
+                result = await libvirt_create_vm(
+                    CreateVMInput(alias="lab", name="newvm", open_viewer=False)
+                )
+        mock_viewer.assert_not_called()
+        assert "virt-viewer" not in result
+
+    async def test_viewer_failure_does_not_fail_create(self):
+        dom = make_mock_domain(name="newvm")
+        self.conn.defineXML.return_value = dom
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._launch_virt_viewer", new_callable=AsyncMock, return_value=False):
+                result = await libvirt_create_vm(
+                    CreateVMInput(alias="lab", name="newvm")
+                )
+        assert "created" in result.lower()
+        assert "failed to launch" in result
+
+
+class TestLaunchVirtViewer:
+    async def test_builds_correct_command(self):
+        mock_proc = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            result = await _launch_virt_viewer("qemu+ssh://root@host/system", "myvm")
+        assert result is True
+        args = mock_exec.call_args[0]
+        assert args == ("virt-viewer", "--wait", "--connect", "qemu+ssh://root@host/system", "myvm")
+
+    async def test_returns_false_on_failure(self):
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError("not found")):
+            result = await _launch_virt_viewer("qemu+ssh://root@host/system", "myvm")
+        assert result is False
+
+
+ISO_LS_OUTPUT = (
+    "/var/lib/libvirt/images/debian-12.8.0-amd64-netinst.iso\n"
+    "/var/lib/libvirt/images/debian-11.9.0-amd64-netinst.iso\n"
+    "/var/lib/libvirt/images/ubuntu-24.04-server.iso\n"
+)
+
+
+class TestFindIsos:
+    async def test_single_match(self):
+        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+            result = await _find_isos("host", "root", 22, None, "debian 12")
+        assert result == ["/var/lib/libvirt/images/debian-12.8.0-amd64-netinst.iso"]
+
+    async def test_multiple_matches(self):
+        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+            result = await _find_isos("host", "root", 22, None, "debian")
+        assert len(result) == 2
+        assert all("debian" in r.lower() for r in result)
+
+    async def test_no_match(self):
+        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+            result = await _find_isos("host", "root", 22, None, "fedora")
+        assert result == []
+
+    async def test_empty_pattern_returns_all(self):
+        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+            result = await _find_isos("host", "root", 22, None, "")
+        assert len(result) == 3
+
+
+class TestCreateVmIsoDiscovery:
+    def setup_method(self):
+        self.conn = make_mock_conn()
+        server._connections["lab"] = self.conn
+
+    async def test_iso_discovery_single(self):
+        dom = make_mock_domain(name="newvm")
+        self.conn.defineXML.return_value = dom
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._find_isos", new_callable=AsyncMock, return_value=["/var/lib/libvirt/images/debian-12.iso"]):
+                with patch("server._build_domain_xml", wraps=server._build_domain_xml) as mock_xml:
+                    result = await libvirt_create_vm(
+                        CreateVMInput(alias="lab", name="newvm", boot_iso="debian 12")
+                    )
+                    spec_arg = mock_xml.call_args[0][0]
+                    assert spec_arg["boot_iso"] == "/var/lib/libvirt/images/debian-12.iso"
+        assert "created" in result.lower()
+
+    async def test_iso_discovery_multiple(self):
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._find_isos", new_callable=AsyncMock, return_value=[
+                "/var/lib/libvirt/images/debian-12.iso",
+                "/var/lib/libvirt/images/debian-12.1.iso",
+            ]):
+                result = await libvirt_create_vm(
+                    CreateVMInput(alias="lab", name="newvm", boot_iso="debian 12")
+                )
+        assert "Multiple ISOs" in result
+        assert "debian-12.iso" in result
+        assert "debian-12.1.iso" in result
+        self.conn.defineXML.assert_not_called()
+
+    async def test_iso_discovery_no_match(self):
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._find_isos", new_callable=AsyncMock, side_effect=[
+                [],  # first call: no matches for pattern
+                ["/var/lib/libvirt/images/ubuntu.iso"],  # second call: list all
+            ]):
+                result = await libvirt_create_vm(
+                    CreateVMInput(alias="lab", name="newvm", boot_iso="fedora")
+                )
+        assert "No ISOs match" in result
+        assert "ubuntu.iso" in result
+        self.conn.defineXML.assert_not_called()
+
+    async def test_absolute_iso_path(self):
+        dom = make_mock_domain(name="newvm")
+        self.conn.defineXML.return_value = dom
+        with patch("server._provision_disk", new_callable=AsyncMock):
+            with patch("server._find_isos", new_callable=AsyncMock) as mock_find:
+                with patch("server._build_domain_xml", wraps=server._build_domain_xml) as mock_xml:
+                    result = await libvirt_create_vm(
+                        CreateVMInput(alias="lab", name="newvm", boot_iso="/images/install.iso")
+                    )
+                    spec_arg = mock_xml.call_args[0][0]
+                    assert spec_arg["boot_iso"] == "/images/install.iso"
+        mock_find.assert_not_called()
+        assert "created" in result.lower()
