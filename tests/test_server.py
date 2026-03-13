@@ -206,7 +206,9 @@ class TestConnectHost:
         server._connections["lab"] = old_conn
         new_conn = make_mock_conn()
         with patch("libvirt.open", return_value=new_conn):
-            await libvirt_connect_host(ConnectHostInput(host="192.168.1.1", alias="lab"))
+            await libvirt_connect_host(
+                ConnectHostInput(host="192.168.1.1", alias="lab")
+            )
         old_conn.close.assert_called_once()
         assert server._connections["lab"] is new_conn
 
@@ -229,7 +231,9 @@ class TestConnectHost:
         conn = make_mock_conn()
         with patch("libvirt.open", return_value=conn) as mock_open:
             await libvirt_connect_host(
-                ConnectHostInput(host="myhost", alias="lab", ssh_key_path="/home/user/.ssh/id_rsa")
+                ConnectHostInput(
+                    host="myhost", alias="lab", ssh_key_path="/home/user/.ssh/id_rsa"
+                )
             )
         uri = mock_open.call_args[0][0]
         assert "keyfile=" in uri
@@ -286,7 +290,10 @@ class TestListDomains:
         server._connections["lab"] = self.conn
 
     async def test_list_all(self):
-        domains = [make_mock_domain("vm1"), make_mock_domain("vm2", state=libvirt.VIR_DOMAIN_SHUTOFF)]
+        domains = [
+            make_mock_domain("vm1"),
+            make_mock_domain("vm2", state=libvirt.VIR_DOMAIN_SHUTOFF),
+        ]
         self.conn.listAllDomains.return_value = domains
         result = await libvirt_list_domains(ListDomainsInput(alias="lab"))
         assert "vm1" in result
@@ -298,13 +305,17 @@ class TestListDomains:
             make_mock_domain("stopped-vm", state=libvirt.VIR_DOMAIN_SHUTOFF),
         ]
         self.conn.listAllDomains.return_value = domains
-        result = await libvirt_list_domains(ListDomainsInput(alias="lab", state_filter="running"))
+        result = await libvirt_list_domains(
+            ListDomainsInput(alias="lab", state_filter="running")
+        )
         assert "running-vm" in result
         assert "stopped-vm" not in result
 
     async def test_invalid_filter(self):
         self.conn.listAllDomains.return_value = []
-        result = await libvirt_list_domains(ListDomainsInput(alias="lab", state_filter="stopped"))
+        result = await libvirt_list_domains(
+            ListDomainsInput(alias="lab", state_filter="stopped")
+        )
         assert "Invalid state_filter" in result
         assert "stopped" in result
 
@@ -342,7 +353,9 @@ class TestGetDomainInfo:
     async def test_markdown_format(self):
         dom = make_mock_domain()
         self.conn.lookupByName.return_value = dom
-        result = await libvirt_get_domain_info(DomainInfoInput(alias="lab", domain="test-vm"))
+        result = await libvirt_get_domain_info(
+            DomainInfoInput(alias="lab", domain="test-vm")
+        )
         assert "# Domain: test-vm" in result
         assert "running" in result
         assert "UUID" in result
@@ -351,7 +364,9 @@ class TestGetDomainInfo:
         dom = make_mock_domain()
         self.conn.lookupByName.return_value = dom
         result = await libvirt_get_domain_info(
-            DomainInfoInput(alias="lab", domain="test-vm", response_format=ResponseFormat.JSON)
+            DomainInfoInput(
+                alias="lab", domain="test-vm", response_format=ResponseFormat.JSON
+            )
         )
         data = json.loads(result)
         assert data["name"] == "test-vm"
@@ -360,13 +375,17 @@ class TestGetDomainInfo:
     async def test_transient_autostart_display(self):
         dom = make_mock_domain(autostart_raises=True, persistent=False)
         self.conn.lookupByName.return_value = dom
-        result = await libvirt_get_domain_info(DomainInfoInput(alias="lab", domain="test-vm"))
+        result = await libvirt_get_domain_info(
+            DomainInfoInput(alias="lab", domain="test-vm")
+        )
         assert "n/a (transient)" in result
 
     async def test_domain_not_found(self):
         self.conn.lookupByName.side_effect = libvirt.libvirtError("not found")
         self.conn.lookupByUUIDString.side_effect = libvirt.libvirtError("not found")
-        result = await libvirt_get_domain_info(DomainInfoInput(alias="lab", domain="ghost"))
+        result = await libvirt_get_domain_info(
+            DomainInfoInput(alias="lab", domain="ghost")
+        )
         assert "Error" in result
 
 
@@ -376,7 +395,9 @@ class TestGetDomainXml:
         server._connections["lab"] = conn
         dom = make_mock_domain()
         conn.lookupByName.return_value = dom
-        result = await libvirt_get_domain_xml(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_get_domain_xml(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert result.startswith("<domain")
         dom.XMLDesc.assert_called_once_with(0)
 
@@ -399,23 +420,31 @@ class TestDomainLifecycle:
         assert "Error" in result
 
     async def test_shutdown_success(self):
-        result = await libvirt_shutdown_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_shutdown_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "Shutdown signal sent" in result
         self.dom.shutdown.assert_called_once()
 
     async def test_shutdown_error(self):
         self.dom.shutdown.side_effect = libvirt.libvirtError("not running")
-        result = await libvirt_shutdown_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_shutdown_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "Error" in result
 
     async def test_destroy_success(self):
-        result = await libvirt_destroy_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_destroy_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "force-stopped" in result
         self.dom.destroy.assert_called_once()
 
     async def test_destroy_error(self):
         self.dom.destroy.side_effect = libvirt.libvirtError("not running")
-        result = await libvirt_destroy_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_destroy_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "Error" in result
 
     async def test_reboot_success(self):
@@ -429,13 +458,17 @@ class TestDomainLifecycle:
         assert "Error" in result
 
     async def test_suspend_success(self):
-        result = await libvirt_suspend_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_suspend_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "suspended" in result
         self.dom.suspend.assert_called_once()
 
     async def test_suspend_error(self):
         self.dom.suspend.side_effect = libvirt.libvirtError("not running")
-        result = await libvirt_suspend_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_suspend_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "Error" in result
 
     async def test_resume_success(self):
@@ -456,7 +489,9 @@ class TestDefineDomain:
         dom = make_mock_domain(name="new-vm")
         conn.defineXML.return_value = dom
         result = await libvirt_define_domain(
-            DefineVMInput(alias="lab", xml="<domain type='kvm'><name>new-vm</name></domain>")
+            DefineVMInput(
+                alias="lab", xml="<domain type='kvm'><name>new-vm</name></domain>"
+            )
         )
         assert "new-vm" in result
         assert "defined" in result
@@ -477,7 +512,9 @@ class TestUndefineDomain:
         server._connections["lab"] = conn
         dom = make_mock_domain(name="old-vm")
         conn.lookupByName.return_value = dom
-        result = await libvirt_undefine_domain(DomainInput(alias="lab", domain="old-vm"))
+        result = await libvirt_undefine_domain(
+            DomainInput(alias="lab", domain="old-vm")
+        )
         assert "old-vm" in result
         assert "undefined" in result
         assert "Disk images were NOT deleted" in result
@@ -489,7 +526,9 @@ class TestUndefineDomain:
         dom = make_mock_domain()
         conn.lookupByName.return_value = dom
         dom.undefine.side_effect = libvirt.libvirtError("domain is running")
-        result = await libvirt_undefine_domain(DomainInput(alias="lab", domain="test-vm"))
+        result = await libvirt_undefine_domain(
+            DomainInput(alias="lab", domain="test-vm")
+        )
         assert "Error" in result
 
 
@@ -501,7 +540,9 @@ class TestGetDomainDisks:
 
     def test_no_disks(self):
         dom = make_mock_domain()
-        dom.XMLDesc.return_value = "<domain type='kvm'><name>test</name><devices></devices></domain>"
+        dom.XMLDesc.return_value = (
+            "<domain type='kvm'><name>test</name><devices></devices></domain>"
+        )
         assert _get_domain_disks(dom) == []
 
 
@@ -512,7 +553,9 @@ class TestDeleteVm:
         server._connections["lab"] = conn
         dom = make_mock_domain(name="del-me")
         conn.lookupByName.return_value = dom
-        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=False))
+        result = await libvirt_delete_vm(
+            DeleteVmInput(alias="lab", domain="del-me", confirm=False)
+        )
         assert "DELETE PREVIEW" in result
         assert "del-me" in result
         assert "/var/lib/libvirt/images/del-me.qcow2" in result
@@ -520,14 +563,16 @@ class TestDeleteVm:
         dom.destroy.assert_not_called()
         dom.undefine.assert_not_called()
 
-    @patch("server._ssh_run", new_callable=AsyncMock)
+    @patch("libvirt_mcp.delete_vm._ssh_run", new_callable=AsyncMock)
     async def test_confirmed_running_vm(self, mock_ssh):
         conn = make_mock_conn()
         conn.getURI.return_value = "qemu+ssh://user@host/system"
         server._connections["lab"] = conn
         dom = make_mock_domain(name="del-me", state=libvirt.VIR_DOMAIN_RUNNING)
         conn.lookupByName.return_value = dom
-        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=True))
+        result = await libvirt_delete_vm(
+            DeleteVmInput(alias="lab", domain="del-me", confirm=True)
+        )
         assert "deleted" in result
         assert "del-me" in result
         dom.destroy.assert_called_once()
@@ -535,31 +580,37 @@ class TestDeleteVm:
         mock_ssh.assert_called_once()
         assert "/var/lib/libvirt/images/del-me.qcow2" in mock_ssh.call_args[0][4]
 
-    @patch("server._ssh_run", new_callable=AsyncMock)
+    @patch("libvirt_mcp.delete_vm._ssh_run", new_callable=AsyncMock)
     async def test_confirmed_shutoff_vm(self, mock_ssh):
         conn = make_mock_conn()
         conn.getURI.return_value = "qemu+ssh://user@host/system"
         server._connections["lab"] = conn
         dom = make_mock_domain(name="del-me", state=libvirt.VIR_DOMAIN_SHUTOFF)
         conn.lookupByName.return_value = dom
-        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=True))
+        result = await libvirt_delete_vm(
+            DeleteVmInput(alias="lab", domain="del-me", confirm=True)
+        )
         assert "deleted" in result
         dom.destroy.assert_not_called()
         dom.undefine.assert_called_once()
 
-    @patch("server._ssh_run", new_callable=AsyncMock)
+    @patch("libvirt_mcp.delete_vm._ssh_run", new_callable=AsyncMock)
     async def test_no_disks(self, mock_ssh):
         conn = make_mock_conn()
         conn.getURI.return_value = "qemu+ssh://user@host/system"
         server._connections["lab"] = conn
         dom = make_mock_domain(name="nodisk", state=libvirt.VIR_DOMAIN_SHUTOFF)
-        dom.XMLDesc.return_value = "<domain type='kvm'><name>nodisk</name><devices></devices></domain>"
+        dom.XMLDesc.return_value = (
+            "<domain type='kvm'><name>nodisk</name><devices></devices></domain>"
+        )
         conn.lookupByName.return_value = dom
-        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="nodisk", confirm=True))
+        result = await libvirt_delete_vm(
+            DeleteVmInput(alias="lab", domain="nodisk", confirm=True)
+        )
         assert "No disk files" in result
         mock_ssh.assert_not_called()
 
-    @patch("server._ssh_run", new_callable=AsyncMock)
+    @patch("libvirt_mcp.delete_vm._ssh_run", new_callable=AsyncMock)
     async def test_disk_delete_error(self, mock_ssh):
         mock_ssh.side_effect = RuntimeError("SSH failed")
         conn = make_mock_conn()
@@ -567,7 +618,9 @@ class TestDeleteVm:
         server._connections["lab"] = conn
         dom = make_mock_domain(name="del-me", state=libvirt.VIR_DOMAIN_SHUTOFF)
         conn.lookupByName.return_value = dom
-        result = await libvirt_delete_vm(DeleteVmInput(alias="lab", domain="del-me", confirm=True))
+        result = await libvirt_delete_vm(
+            DeleteVmInput(alias="lab", domain="del-me", confirm=True)
+        )
         assert "deleted" in result
         assert "errors" in result.lower()
         dom.undefine.assert_called_once()

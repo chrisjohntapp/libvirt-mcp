@@ -75,7 +75,11 @@ class TestLoadTemplate:
 
 class TestApplyOverrides:
     def test_override_vcpus(self):
-        tmpl = {"vcpus": 1, "memory_mb": 1024, "disk": {"source": "create", "size_gb": 10}}
+        tmpl = {
+            "vcpus": 1,
+            "memory_mb": 1024,
+            "disk": {"source": "create", "size_gb": 10},
+        }
         result = _apply_overrides(tmpl, vcpus=4)
         assert result["vcpus"] == 4
         assert result["memory_mb"] == 1024
@@ -101,7 +105,11 @@ class TestApplyOverrides:
         assert result == tmpl
 
     def test_override_does_not_mutate_original(self):
-        tmpl = {"vcpus": 1, "memory_mb": 1024, "disk": {"source": "create", "size_gb": 10}}
+        tmpl = {
+            "vcpus": 1,
+            "memory_mb": 1024,
+            "disk": {"source": "create", "size_gb": 10},
+        }
         _apply_overrides(tmpl, vcpus=4, disk_size_gb=20)
         assert tmpl["vcpus"] == 1
         assert tmpl["disk"]["size_gb"] == 10
@@ -158,7 +166,10 @@ class TestBuildDomainXml:
         root = self._parse(xml)
         cdroms = [d for d in root.findall(".//disk") if d.get("device") == "cdrom"]
         assert len(cdroms) == 1
-        assert cdroms[0].find("source").get("file") == "/var/lib/libvirt/images/install.iso"
+        assert (
+            cdroms[0].find("source").get("file")
+            == "/var/lib/libvirt/images/install.iso"
+        )
         boot = root.find(".//os/boot")
         assert boot.get("dev") == "cdrom"
 
@@ -180,7 +191,9 @@ class TestBuildDomainXml:
 class TestProvisionDisk:
     async def test_create_mode(self):
         disk_spec = {"source": "create", "size_gb": 10}
-        with patch("server._ssh_run", new_callable=AsyncMock, return_value="") as mock_ssh:
+        with patch(
+            "libvirt_mcp.create_vm._ssh_run", new_callable=AsyncMock, return_value=""
+        ) as mock_ssh:
             await _provision_disk("myhost", "root", 22, None, disk_spec, "myvm")
         cmd = mock_ssh.call_args[0][4]
         assert "sudo qemu-img create" in cmd
@@ -189,7 +202,9 @@ class TestProvisionDisk:
 
     async def test_copy_mode(self):
         disk_spec = {"source": "copy", "source_path": "/images/base.qcow2"}
-        with patch("server._ssh_run", new_callable=AsyncMock, return_value="") as mock_ssh:
+        with patch(
+            "libvirt_mcp.create_vm._ssh_run", new_callable=AsyncMock, return_value=""
+        ) as mock_ssh:
             await _provision_disk("myhost", "root", 22, None, disk_spec, "myvm")
         cmd = mock_ssh.call_args[0][4]
         assert "sudo cp" in cmd
@@ -198,7 +213,11 @@ class TestProvisionDisk:
 
     async def test_ssh_failure(self):
         disk_spec = {"source": "create", "size_gb": 10}
-        with patch("server._ssh_run", new_callable=AsyncMock, side_effect=RuntimeError("ssh failed")):
+        with patch(
+            "libvirt_mcp.create_vm._ssh_run",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("ssh failed"),
+        ):
             with pytest.raises(RuntimeError, match="ssh failed"):
                 await _provision_disk("myhost", "root", 22, None, disk_spec, "myvm")
 
@@ -208,7 +227,9 @@ class TestSshRun:
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"ok\n", b"")
         mock_proc.returncode = 0
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             result = await _ssh_run("myhost", "testuser", 22, None, "echo ok")
         assert result == "ok\n"
         args = mock_exec.call_args[0]
@@ -219,7 +240,9 @@ class TestSshRun:
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"ok\n", b"")
         mock_proc.returncode = 0
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             await _ssh_run("myhost", "root", 22, "/path/to/key", "echo ok")
         args = mock_exec.call_args[0]
         assert "-i" in args
@@ -242,20 +265,24 @@ class TestCreateVm:
     async def test_happy_path(self):
         dom = make_mock_domain(name="newvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            result = await libvirt_create_vm(
-                CreateVMInput(alias="lab", name="newvm")
-            )
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            result = await libvirt_create_vm(CreateVMInput(alias="lab", name="newvm"))
         assert "newvm" in result
-        assert "defined" in result.lower() or "started" in result.lower() or "created" in result.lower()
+        assert (
+            "defined" in result.lower()
+            or "started" in result.lower()
+            or "created" in result.lower()
+        )
         dom.create.assert_called_once()
 
     async def test_with_overrides(self):
         dom = make_mock_domain(name="bigvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
             result = await libvirt_create_vm(
-                CreateVMInput(alias="lab", name="bigvm", vcpus=4, memory_mb=4096, disk_size_gb=50)
+                CreateVMInput(
+                    alias="lab", name="bigvm", vcpus=4, memory_mb=4096, disk_size_gb=50
+                )
             )
         assert "bigvm" in result
         assert "4096 MB" in result
@@ -263,10 +290,15 @@ class TestCreateVm:
     async def test_with_boot_iso(self):
         dom = make_mock_domain(name="installvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._build_domain_xml", wraps=server._build_domain_xml) as mock_xml:
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._build_domain_xml",
+                wraps=server._build_domain_xml,
+            ) as mock_xml:
                 result = await libvirt_create_vm(
-                    CreateVMInput(alias="lab", name="installvm", boot_iso="/images/install.iso")
+                    CreateVMInput(
+                        alias="lab", name="installvm", boot_iso="/images/install.iso"
+                    )
                 )
                 spec_arg = mock_xml.call_args[0][0]
                 assert spec_arg["boot_iso"] == "/images/install.iso"
@@ -279,25 +311,29 @@ class TestCreateVm:
         assert "Error" in result
 
     async def test_disk_provision_fails(self):
-        with patch("server._provision_disk", new_callable=AsyncMock, side_effect=RuntimeError("disk error")):
-            result = await libvirt_create_vm(
-                CreateVMInput(alias="lab", name="newvm")
-            )
+        with patch(
+            "libvirt_mcp.create_vm._provision_disk",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("disk error"),
+        ):
+            result = await libvirt_create_vm(CreateVMInput(alias="lab", name="newvm"))
         assert "Error" in result
 
     async def test_define_xml_fails(self):
         self.conn.defineXML.side_effect = libvirt.libvirtError("bad XML")
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            result = await libvirt_create_vm(
-                CreateVMInput(alias="lab", name="newvm")
-            )
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            result = await libvirt_create_vm(CreateVMInput(alias="lab", name="newvm"))
         assert "Error" in result
 
     async def test_open_viewer_default(self):
         dom = make_mock_domain(name="newvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._launch_virt_viewer", new_callable=AsyncMock, return_value=True) as mock_viewer:
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._launch_virt_viewer",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_viewer:
                 result = await libvirt_create_vm(
                     CreateVMInput(alias="lab", name="newvm")
                 )
@@ -307,8 +343,10 @@ class TestCreateVm:
     async def test_open_viewer_false(self):
         dom = make_mock_domain(name="newvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._launch_virt_viewer", new_callable=AsyncMock) as mock_viewer:
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._launch_virt_viewer", new_callable=AsyncMock
+            ) as mock_viewer:
                 result = await libvirt_create_vm(
                     CreateVMInput(alias="lab", name="newvm", open_viewer=False)
                 )
@@ -318,8 +356,12 @@ class TestCreateVm:
     async def test_viewer_failure_does_not_fail_create(self):
         dom = make_mock_domain(name="newvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._launch_virt_viewer", new_callable=AsyncMock, return_value=False):
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._launch_virt_viewer",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
                 result = await libvirt_create_vm(
                     CreateVMInput(alias="lab", name="newvm")
                 )
@@ -330,14 +372,24 @@ class TestCreateVm:
 class TestLaunchVirtViewer:
     async def test_builds_correct_command(self):
         mock_proc = AsyncMock()
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as mock_exec:
             result = await _launch_virt_viewer("qemu+ssh://root@host/system", "myvm")
         assert result is True
         args = mock_exec.call_args[0]
-        assert args == ("virt-viewer", "--wait", "--connect", "qemu+ssh://root@host/system", "myvm")
+        assert args == (
+            "virt-viewer",
+            "--wait",
+            "--connect",
+            "qemu+ssh://root@host/system",
+            "myvm",
+        )
 
     async def test_returns_false_on_failure(self):
-        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError("not found")):
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=FileNotFoundError("not found")
+        ):
             result = await _launch_virt_viewer("qemu+ssh://root@host/system", "myvm")
         assert result is False
 
@@ -351,23 +403,39 @@ ISO_LS_OUTPUT = (
 
 class TestFindIsos:
     async def test_single_match(self):
-        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+        with patch(
+            "libvirt_mcp.remote._ssh_run",
+            new_callable=AsyncMock,
+            return_value=ISO_LS_OUTPUT,
+        ):
             result = await _find_isos("host", "root", 22, None, "debian 12")
         assert result == ["/var/lib/libvirt/images/debian-12.8.0-amd64-netinst.iso"]
 
     async def test_multiple_matches(self):
-        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+        with patch(
+            "libvirt_mcp.remote._ssh_run",
+            new_callable=AsyncMock,
+            return_value=ISO_LS_OUTPUT,
+        ):
             result = await _find_isos("host", "root", 22, None, "debian")
         assert len(result) == 2
         assert all("debian" in r.lower() for r in result)
 
     async def test_no_match(self):
-        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+        with patch(
+            "libvirt_mcp.remote._ssh_run",
+            new_callable=AsyncMock,
+            return_value=ISO_LS_OUTPUT,
+        ):
             result = await _find_isos("host", "root", 22, None, "fedora")
         assert result == []
 
     async def test_empty_pattern_returns_all(self):
-        with patch("server._ssh_run", new_callable=AsyncMock, return_value=ISO_LS_OUTPUT):
+        with patch(
+            "libvirt_mcp.remote._ssh_run",
+            new_callable=AsyncMock,
+            return_value=ISO_LS_OUTPUT,
+        ):
             result = await _find_isos("host", "root", 22, None, "")
         assert len(result) == 3
 
@@ -380,22 +448,35 @@ class TestCreateVmIsoDiscovery:
     async def test_iso_discovery_single(self):
         dom = make_mock_domain(name="newvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._find_isos", new_callable=AsyncMock, return_value=["/var/lib/libvirt/images/debian-12.iso"]):
-                with patch("server._build_domain_xml", wraps=server._build_domain_xml) as mock_xml:
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._find_isos",
+                new_callable=AsyncMock,
+                return_value=["/var/lib/libvirt/images/debian-12.iso"],
+            ):
+                with patch(
+                    "libvirt_mcp.create_vm._build_domain_xml",
+                    wraps=server._build_domain_xml,
+                ) as mock_xml:
                     result = await libvirt_create_vm(
                         CreateVMInput(alias="lab", name="newvm", boot_iso="debian 12")
                     )
                     spec_arg = mock_xml.call_args[0][0]
-                    assert spec_arg["boot_iso"] == "/var/lib/libvirt/images/debian-12.iso"
+                    assert (
+                        spec_arg["boot_iso"] == "/var/lib/libvirt/images/debian-12.iso"
+                    )
         assert "created" in result.lower()
 
     async def test_iso_discovery_multiple(self):
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._find_isos", new_callable=AsyncMock, return_value=[
-                "/var/lib/libvirt/images/debian-12.iso",
-                "/var/lib/libvirt/images/debian-12.1.iso",
-            ]):
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._find_isos",
+                new_callable=AsyncMock,
+                return_value=[
+                    "/var/lib/libvirt/images/debian-12.iso",
+                    "/var/lib/libvirt/images/debian-12.1.iso",
+                ],
+            ):
                 result = await libvirt_create_vm(
                     CreateVMInput(alias="lab", name="newvm", boot_iso="debian 12")
                 )
@@ -405,11 +486,15 @@ class TestCreateVmIsoDiscovery:
         self.conn.defineXML.assert_not_called()
 
     async def test_iso_discovery_no_match(self):
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._find_isos", new_callable=AsyncMock, side_effect=[
-                [],  # first call: no matches for pattern
-                ["/var/lib/libvirt/images/ubuntu.iso"],  # second call: list all
-            ]):
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._find_isos",
+                new_callable=AsyncMock,
+                side_effect=[
+                    [],  # first call: no matches for pattern
+                    ["/var/lib/libvirt/images/ubuntu.iso"],  # second call: list all
+                ],
+            ):
                 result = await libvirt_create_vm(
                     CreateVMInput(alias="lab", name="newvm", boot_iso="fedora")
                 )
@@ -420,11 +505,18 @@ class TestCreateVmIsoDiscovery:
     async def test_absolute_iso_path(self):
         dom = make_mock_domain(name="newvm")
         self.conn.defineXML.return_value = dom
-        with patch("server._provision_disk", new_callable=AsyncMock):
-            with patch("server._find_isos", new_callable=AsyncMock) as mock_find:
-                with patch("server._build_domain_xml", wraps=server._build_domain_xml) as mock_xml:
+        with patch("libvirt_mcp.create_vm._provision_disk", new_callable=AsyncMock):
+            with patch(
+                "libvirt_mcp.create_vm._find_isos", new_callable=AsyncMock
+            ) as mock_find:
+                with patch(
+                    "libvirt_mcp.create_vm._build_domain_xml",
+                    wraps=server._build_domain_xml,
+                ) as mock_xml:
                     result = await libvirt_create_vm(
-                        CreateVMInput(alias="lab", name="newvm", boot_iso="/images/install.iso")
+                        CreateVMInput(
+                            alias="lab", name="newvm", boot_iso="/images/install.iso"
+                        )
                     )
                     spec_arg = mock_xml.call_args[0][0]
                     assert spec_arg["boot_iso"] == "/images/install.iso"

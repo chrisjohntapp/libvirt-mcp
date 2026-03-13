@@ -86,7 +86,7 @@ class TestRewriteDiskPaths:
 
 
 class TestScpBetweenHosts:
-    @patch("server._ssh_run", new_callable=AsyncMock)
+    @patch("libvirt_mcp.remote._ssh_run", new_callable=AsyncMock)
     async def test_direct_scp_success(self, mock_ssh):
         await _scp_between_hosts(
             "src",
@@ -168,7 +168,7 @@ class TestMigrateVM:
         server._connections["source"] = self.src_conn
         server._connections["target"] = self.tgt_conn
 
-    @patch("server._run_migration_job", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._run_migration_job", new_callable=AsyncMock)
     @patch("asyncio.create_task")
     async def test_starts_async_job(self, mock_create_task, mock_run_job):
         dom = make_mock_domain(name="migrate-me", state=libvirt.VIR_DOMAIN_SHUTOFF)
@@ -187,7 +187,7 @@ class TestMigrateVM:
         scheduled = mock_create_task.call_args[0][0]
         scheduled.close()
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_offline_migrate_happy_path(self, mock_scp):
         dom = make_mock_domain(name="migrate-me", state=libvirt.VIR_DOMAIN_RUNNING)
         dom.info.side_effect = [
@@ -240,7 +240,7 @@ class TestMigrateVM:
         )
         assert "Error" in result
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_domain_exists_on_target(self, mock_scp):
         dom = make_mock_domain(name="dupe-vm")
         self.src_conn.lookupByName.return_value = dom
@@ -254,7 +254,7 @@ class TestMigrateVM:
         assert "already exists" in result
         mock_scp.assert_not_called()
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_retry_after_timeout_detects_already_completed(self, mock_scp):
         src_dom = make_mock_domain(name="dupe-vm", state=libvirt.VIR_DOMAIN_SHUTOFF)
         tgt_dom = make_mock_domain(name="dupe-vm", state=libvirt.VIR_DOMAIN_RUNNING)
@@ -270,7 +270,7 @@ class TestMigrateVM:
         assert "cleanup" in result.lower()
         mock_scp.assert_not_called()
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_running_vm_stopped_first(self, mock_scp):
         dom = make_mock_domain(name="vm1", state=libvirt.VIR_DOMAIN_RUNNING)
         dom.info.side_effect = [
@@ -288,7 +288,7 @@ class TestMigrateVM:
         dom.shutdown.assert_called_once()
         dom.destroy.assert_not_called()
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_shutdown_timeout_falls_back_to_destroy(self, mock_scp):
         dom = make_mock_domain(name="vm1", state=libvirt.VIR_DOMAIN_RUNNING)
         self.src_conn.lookupByName.return_value = dom
@@ -307,7 +307,7 @@ class TestMigrateVM:
         dom.shutdown.assert_called_once()
         dom.destroy.assert_called_once()
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_shutdown_error_falls_back_to_destroy(self, mock_scp):
         dom = make_mock_domain(name="vm1", state=libvirt.VIR_DOMAIN_RUNNING)
         dom.shutdown.side_effect = libvirt.libvirtError("shutdown failed")
@@ -322,7 +322,7 @@ class TestMigrateVM:
         dom.shutdown.assert_called_once()
         dom.destroy.assert_called_once()
 
-    @patch("server._scp_between_hosts", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._scp_between_hosts", new_callable=AsyncMock)
     async def test_already_shutoff(self, mock_scp):
         dom = make_mock_domain(name="vm1", state=libvirt.VIR_DOMAIN_SHUTOFF)
         self.src_conn.lookupByName.return_value = dom
@@ -341,7 +341,7 @@ class TestMigrateVM:
         self.tgt_conn.lookupByName.side_effect = libvirt.libvirtError("not found")
 
         with patch(
-            "server._scp_between_hosts",
+            "libvirt_mcp.migration._scp_between_hosts",
             new_callable=AsyncMock,
             side_effect=RuntimeError("scp failed"),
         ):
@@ -397,7 +397,7 @@ class TestMigrateVMCleanup:
         server._connections["source"] = self.src_conn
         server._connections["target"] = self.tgt_conn
 
-    @patch("server._ssh_run", new_callable=AsyncMock)
+    @patch("libvirt_mcp.migration._ssh_run", new_callable=AsyncMock)
     async def test_cleanup_success(self, mock_ssh):
         dom = make_mock_domain(name="vm1", state=libvirt.VIR_DOMAIN_SHUTOFF)
         self.src_conn.lookupByName.return_value = dom
