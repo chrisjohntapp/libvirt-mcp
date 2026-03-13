@@ -127,7 +127,12 @@ class TestBuildDomainXml:
     def _parse(self, xml_str):
         return ET.fromstring(xml_str)
 
-    def test_basic_spec(self):
+    def _find_required(self, root, path):
+        node = root.find(path)
+        assert node is not None, path
+        return node
+
+    def _base_spec(self, **overrides):
         spec = {
             "name": "myvm",
             "vcpus": 2,
@@ -137,55 +142,79 @@ class TestBuildDomainXml:
             "os": {"type": "hvm", "arch": "x86_64", "boot_dev": "hd"},
             "network_bridge": "br0",
         }
+        spec.update(overrides)
+        return spec
+
+    def test_basic_spec(self):
+        spec = self._base_spec()
         xml = _build_domain_xml(spec)
         root = self._parse(xml)
         assert root.tag == "domain"
         assert root.get("type") == "kvm"
-        assert root.find("name").text == "myvm"
-        assert root.find("vcpu").text == "2"
-        assert root.find("memory").text == "2097152"  # 2048 * 1024
-        assert root.find("memory").get("unit") == "KiB"
-        disk = root.find(".//disk")
-        assert disk.find("source").get("file") == "/var/lib/libvirt/images/myvm.qcow2"
-        assert disk.find("target").get("bus") == "virtio"
-        iface = root.find(".//interface")
-        assert iface.find("source").get("bridge") == "br0"
+        assert self._find_required(root, "name").text == "myvm"
+        assert self._find_required(root, "vcpu").text == "2"
+        assert self._find_required(root, "memory").text == "2097152"  # 2048 * 1024
+        assert self._find_required(root, "memory").get("unit") == "KiB"
+        assert self._find_required(root, "currentMemory").text == "2097152"
+        disk = self._find_required(root, ".//disk")
+        assert (
+            self._find_required(disk, "source").get("file")
+            == "/var/lib/libvirt/images/myvm.qcow2"
+        )
+        assert self._find_required(disk, "target").get("bus") == "virtio"
+        iface = self._find_required(root, ".//interface")
+        assert self._find_required(iface, "source").get("bridge") == "br0"
+        assert self._find_required(root, "./os/type").get("machine") == "pc-q35-10.0"
+        cpu = self._find_required(root, "cpu")
+        assert cpu.get("mode") == "host-passthrough"
+        assert cpu.get("migratable") == "on"
+        assert root.find("./features/acpi") is not None
+        assert root.find("./features/apic") is not None
+        assert self._find_required(root, "./pm/suspend-to-mem").get("enabled") == "no"
+        assert self._find_required(root, "./pm/suspend-to-disk").get("enabled") == "no"
+        assert (
+            self._find_required(root, "./devices/controller[@type='usb']").get("model")
+            == "qemu-xhci"
+        )
+        assert root.find("./devices/controller[@type='virtio-serial']") is not None
+        assert (
+            self._find_required(root, "./devices/channel/target").get("name")
+            == "org.qemu.guest_agent.0"
+        )
+        assert self._find_required(root, "./devices/watchdog").get("model") == "itco"
+        assert self._find_required(root, "./devices/rng/backend").text == "/dev/urandom"
+        assert len(root.findall("./devices/controller[@model='pcie-root-port']")) == 14
 
     def test_with_boot_iso(self):
-        spec = {
-            "name": "myvm",
-            "vcpus": 1,
-            "memory_mb": 1024,
-            "disk_path": "/var/lib/libvirt/images/myvm.qcow2",
-            "disk_bus": "virtio",
-            "os": {"type": "hvm", "arch": "x86_64", "boot_dev": "cdrom"},
-            "network_bridge": "br0",
-            "boot_iso": "/var/lib/libvirt/images/install.iso",
-        }
+        spec = self._base_spec(
+            vcpus=1,
+            memory_mb=1024,
+            os={"type": "hvm", "arch": "x86_64", "boot_dev": "cdrom"},
+            boot_iso="/var/lib/libvirt/images/install.iso",
+        )
         xml = _build_domain_xml(spec)
         root = self._parse(xml)
         cdroms = [d for d in root.findall(".//disk") if d.get("device") == "cdrom"]
         assert len(cdroms) == 1
         assert (
-            cdroms[0].find("source").get("file")
+            self._find_required(cdroms[0], "source").get("file")
             == "/var/lib/libvirt/images/install.iso"
         )
-        boot = root.find(".//os/boot")
+        boot = self._find_required(root, ".//os/boot")
         assert boot.get("dev") == "cdrom"
 
     def test_different_arch(self):
-        spec = {
-            "name": "myvm",
-            "vcpus": 1,
-            "memory_mb": 512,
-            "disk_path": "/var/lib/libvirt/images/myvm.qcow2",
-            "disk_bus": "virtio",
-            "os": {"type": "hvm", "arch": "aarch64", "boot_dev": "hd"},
-            "network_bridge": "br0",
-        }
+        spec = self._base_spec(
+            vcpus=1,
+            memory_mb=512,
+            os={"type": "hvm", "arch": "aarch64", "boot_dev": "hd"},
+        )
         xml = _build_domain_xml(spec)
         root = self._parse(xml)
-        assert root.find(".//os/type").get("arch") == "aarch64"
+        assert self._find_required(root, ".//os/type").get("arch") == "aarch64"
+        assert self._find_required(root, ".//os/type").get("machine") is None
+        assert root.find("cpu") is None
+        assert root.find("./devices/controller[@type='virtio-serial']") is None
 
 
 class TestProvisionDisk:

@@ -51,19 +51,63 @@ def _build_domain_xml(spec: dict) -> str:
     domain = ET.Element("domain", type="kvm")
     ET.SubElement(domain, "name").text = spec["name"]
     ET.SubElement(domain, "memory", unit="KiB").text = str(spec["memory_mb"] * 1024)
+    ET.SubElement(domain, "currentMemory", unit="KiB").text = str(
+        spec["memory_mb"] * 1024
+    )
     ET.SubElement(domain, "vcpu").text = str(spec["vcpus"])
 
     os_elem = ET.SubElement(domain, "os")
-    os_type = ET.SubElement(os_elem, "type", arch=spec["os"]["arch"])
+    os_type_attrs = {"arch": spec["os"]["arch"]}
+    if spec["os"]["arch"] == "x86_64":
+        os_type_attrs["machine"] = "pc-q35-10.0"
+    os_type = ET.SubElement(os_elem, "type", **os_type_attrs)
     os_type.text = spec["os"]["type"]
     ET.SubElement(os_elem, "boot", dev=spec["os"]["boot_dev"])
 
+    if spec["os"]["arch"] == "x86_64":
+        features = ET.SubElement(domain, "features")
+        ET.SubElement(features, "acpi")
+        ET.SubElement(features, "apic")
+        ET.SubElement(
+            domain,
+            "cpu",
+            mode="host-passthrough",
+            check="none",
+            migratable="on",
+        )
+        clock = ET.SubElement(domain, "clock", offset="utc")
+        ET.SubElement(clock, "timer", name="rtc", tickpolicy="catchup")
+        ET.SubElement(clock, "timer", name="pit", tickpolicy="delay")
+        ET.SubElement(clock, "timer", name="hpet", present="no")
+    else:
+        ET.SubElement(domain, "clock", offset="utc")
+
+    ET.SubElement(domain, "on_poweroff").text = "destroy"
+    ET.SubElement(domain, "on_reboot").text = "restart"
+    ET.SubElement(domain, "on_crash").text = "destroy"
+
+    if spec["os"]["arch"] == "x86_64":
+        pm = ET.SubElement(domain, "pm")
+        ET.SubElement(pm, "suspend-to-mem", enabled="no")
+        ET.SubElement(pm, "suspend-to-disk", enabled="no")
+
     devices = ET.SubElement(domain, "devices")
+    ET.SubElement(devices, "emulator").text = "/usr/bin/qemu-system-x86_64"
 
     disk = ET.SubElement(devices, "disk", type="file", device="disk")
     ET.SubElement(disk, "driver", name="qemu", type="qcow2")
     ET.SubElement(disk, "source", file=spec["disk_path"])
     ET.SubElement(disk, "target", dev="vda", bus=spec["disk_bus"])
+    if spec["os"]["arch"] == "x86_64":
+        ET.SubElement(
+            disk,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x04",
+            slot="0x00",
+            function="0x0",
+        )
 
     if spec.get("boot_iso"):
         cdrom = ET.SubElement(devices, "disk", type="file", device="cdrom")
@@ -72,15 +116,162 @@ def _build_domain_xml(spec: dict) -> str:
         ET.SubElement(cdrom, "target", dev="hda", bus="ide")
         ET.SubElement(cdrom, "readonly")
 
+    if spec["os"]["arch"] == "x86_64":
+        usb = ET.SubElement(
+            devices, "controller", type="usb", index="0", model="qemu-xhci", ports="15"
+        )
+        ET.SubElement(
+            usb,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x02",
+            slot="0x00",
+            function="0x0",
+        )
+        ET.SubElement(devices, "controller", type="pci", index="0", model="pcie-root")
+
+        for index, chassis, port, slot, function, multifunction in [
+            (1, 1, "0x10", "0x02", "0x0", True),
+            (2, 2, "0x11", "0x02", "0x1", False),
+            (3, 3, "0x12", "0x02", "0x2", False),
+            (4, 4, "0x13", "0x02", "0x3", False),
+            (5, 5, "0x14", "0x02", "0x4", False),
+            (6, 6, "0x15", "0x02", "0x5", False),
+            (7, 7, "0x16", "0x02", "0x6", False),
+            (8, 8, "0x17", "0x02", "0x7", False),
+            (9, 9, "0x18", "0x03", "0x0", True),
+            (10, 10, "0x19", "0x03", "0x1", False),
+            (11, 11, "0x1a", "0x03", "0x2", False),
+            (12, 12, "0x1b", "0x03", "0x3", False),
+            (13, 13, "0x1c", "0x03", "0x4", False),
+            (14, 14, "0x1d", "0x03", "0x5", False),
+        ]:
+            controller = ET.SubElement(
+                devices,
+                "controller",
+                type="pci",
+                index=str(index),
+                model="pcie-root-port",
+            )
+            ET.SubElement(controller, "model", name="pcie-root-port")
+            ET.SubElement(controller, "target", chassis=str(chassis), port=port)
+            address_attrs = {
+                "type": "pci",
+                "domain": "0x0000",
+                "bus": "0x00",
+                "slot": slot,
+                "function": function,
+            }
+            if multifunction:
+                address_attrs["multifunction"] = "on"
+            ET.SubElement(controller, "address", **address_attrs)
+
+        sata = ET.SubElement(devices, "controller", type="sata", index="0")
+        ET.SubElement(
+            sata,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x00",
+            slot="0x1f",
+            function="0x2",
+        )
+        virtio_serial = ET.SubElement(
+            devices, "controller", type="virtio-serial", index="0"
+        )
+        ET.SubElement(
+            virtio_serial,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x03",
+            slot="0x00",
+            function="0x0",
+        )
+    else:
+        ET.SubElement(devices, "controller", type="pci", index="0", model="pci-root")
+
     iface = ET.SubElement(devices, "interface", type="bridge")
     ET.SubElement(iface, "source", bridge=spec["network_bridge"])
     ET.SubElement(iface, "model", type="virtio")
+    if spec["os"]["arch"] == "x86_64":
+        ET.SubElement(
+            iface,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x01",
+            slot="0x00",
+            function="0x0",
+        )
 
-    ET.SubElement(devices, "graphics", type="vnc", autoport="yes")
-    ET.SubElement(devices, "video").append(ET.Element("model", type="virtio"))
+    serial = ET.SubElement(devices, "serial", type="pty")
+    serial_target = ET.SubElement(serial, "target", type="isa-serial", port="0")
+    ET.SubElement(serial_target, "model", name="isa-serial")
 
-    ET.SubElement(devices, "serial", type="pty")
-    ET.SubElement(devices, "console", type="pty")
+    console = ET.SubElement(devices, "console", type="pty")
+    ET.SubElement(console, "target", type="serial", port="0")
+
+    if spec["os"]["arch"] == "x86_64":
+        channel = ET.SubElement(devices, "channel", type="unix")
+        ET.SubElement(channel, "target", type="virtio", name="org.qemu.guest_agent.0")
+        ET.SubElement(
+            channel,
+            "address",
+            type="virtio-serial",
+            controller="0",
+            bus="0",
+            port="1",
+        )
+        tablet = ET.SubElement(devices, "input", type="tablet", bus="usb")
+        ET.SubElement(tablet, "address", type="usb", bus="0", port="1")
+
+    ET.SubElement(devices, "input", type="mouse", bus="ps2")
+    ET.SubElement(devices, "input", type="keyboard", bus="ps2")
+
+    graphics = ET.SubElement(devices, "graphics", type="vnc", port="-1", autoport="yes")
+    ET.SubElement(graphics, "listen", type="address")
+    ET.SubElement(devices, "audio", id="1", type="none")
+
+    video = ET.SubElement(devices, "video")
+    ET.SubElement(video, "model", type="virtio", heads="1", primary="yes")
+    if spec["os"]["arch"] == "x86_64":
+        ET.SubElement(
+            video,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x00",
+            slot="0x01",
+            function="0x0",
+        )
+
+    if spec["os"]["arch"] == "x86_64":
+        ET.SubElement(devices, "watchdog", model="itco", action="reset")
+
+    memballoon = ET.SubElement(devices, "memballoon", model="virtio")
+    if spec["os"]["arch"] == "x86_64":
+        ET.SubElement(
+            memballoon,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x05",
+            slot="0x00",
+            function="0x0",
+        )
+        rng = ET.SubElement(devices, "rng", model="virtio")
+        ET.SubElement(rng, "backend", model="random").text = "/dev/urandom"
+        ET.SubElement(
+            rng,
+            "address",
+            type="pci",
+            domain="0x0000",
+            bus="0x06",
+            slot="0x00",
+            function="0x0",
+        )
 
     return ET.tostring(domain, encoding="unicode")
 
