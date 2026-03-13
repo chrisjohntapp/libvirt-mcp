@@ -80,3 +80,168 @@ All 121 unit tests passing.
 - Virtual network management tools
 - Snapshot tools (create, list, revert, delete)
 - Domain cloning helper
+
+
+## Refactor Plan: Split `server.py` into Modules (keep `server.py` shim)
+
+### Goal
+
+Improve maintainability by splitting `server.py` into focused modules while preserving all current behavior, MCP tool names, script entrypoints, and compatibility imports.
+
+### Hard constraints
+
+- Keep `server.py` as a compatibility shim for now.
+- Preserve all `@mcp.tool(name="...")` names exactly.
+- Preserve request/response behavior and text unless a compatibility fix requires minimal adjustment.
+- No feature work during refactor.
+- Work incrementally with test validation at each step.
+- Use `uv run` for all test execution.
+
+### Current baseline (evidence)
+
+- Monolithic file: `server.py` (~1425 lines), mixing state, models, helpers, SSH operations, and all tools.
+- Tests currently import internals from `server` directly:
+  - `tests/test_server.py`
+  - `tests/test_create_vm.py`
+  - `tests/test_migrate_vm.py`
+  - `tests/test_integration.py`
+- Packaging/script currently points to `server`:
+  - `pyproject.toml`: `libvirt-mcp = "server:mcp.run"`
+
+### Proposed target structure
+
+- `libvirt_mcp/__init__.py` (minimal package marker; optional exports)
+- `libvirt_mcp/app.py`
+  - `mcp = FastMCP("libvirt_mcp")`
+- `libvirt_mcp/state.py`
+  - `_connections`, `_migration_jobs`, `_migration_jobs_lock`
+- `libvirt_mcp/common.py`
+  - `_run`, `_format_error`, `_STATE_MAP`, `_domain_state_str`
+- `libvirt_mcp/models.py`
+  - `ResponseFormat`
+  - `_MODEL_CONFIG`, `_ALIAS_FIELD`, `_DOMAIN_FIELD`
+  - `ConnectHostInput`, `HostInput`, `DomainInput`, `ListDomainsInput`
+  - `DefineVMInput`, `DomainInfoInput`
+  - `CreateVMInput`, `DeleteVmInput`
+  - `MigrateVMInput`, `MigrationStatusInput`
+- `libvirt_mcp/connections.py`
+  - `_get_conn`
+  - `libvirt_connect_host`, `libvirt_disconnect_host`, `libvirt_list_hosts`
+- `libvirt_mcp/domains.py`
+  - `_lookup_domain`, `_domain_summary`, `_domain_action`
+  - `libvirt_list_domains`, `libvirt_get_domain_info`, `libvirt_get_domain_xml`
+  - lifecycle tools: start/shutdown/destroy/reboot/suspend/resume
+  - `libvirt_define_domain`, `libvirt_undefine_domain`
+- `libvirt_mcp/remote.py`
+  - `_ssh_run`, `_parse_uri_parts`, `_find_isos`, `_scp_between_hosts`
+- `libvirt_mcp/create_vm.py`
+  - `TEMPLATES_DIR`
+  - `_load_template`, `_apply_overrides`, `_build_domain_xml`, `_launch_virt_viewer`
+  - `libvirt_list_templates`, `libvirt_create_vm`
+- `libvirt_mcp/delete_vm.py`
+  - `_get_domain_disks`, `libvirt_delete_vm`
+- `libvirt_mcp/migration.py`
+  - `_rewrite_disk_paths`
+  - `_utc_now_iso`
+  - job helpers: `_migration_job_create`, `_migration_job_mark_phase`, `_migration_job_mark_running`, `_migration_job_mark_success`, `_migration_job_mark_failure`, `_migration_job_get`, `_run_migration_job`
+  - `_migrate_vm_offline`
+  - `libvirt_migrate_vm`, `libvirt_get_migration_status`
+- `server.py` (shim)
+  - imports `mcp` from package and re-exports symbols used by current tests/consumers
+  - retains:
+    - `if __name__ == "__main__": mcp.run()`
+
+### Symbol move map (mechanical execution checklist)
+
+1. Move shared/core:
+   - `_connections`, `_migration_jobs`, `_migration_jobs_lock` -> `state.py`
+   - `_run`, `_format_error`, `_STATE_MAP`, `_domain_state_str` -> `common.py`
+2. Move models/enums/fields:
+   - `ResponseFormat`, `_MODEL_CONFIG`, `_ALIAS_FIELD`, `_DOMAIN_FIELD`
+   - all `*Input` classes -> `models.py`
+3. Move connection functions/tools:
+   - `_get_conn`, `libvirt_connect_host`, `libvirt_disconnect_host`, `libvirt_list_hosts` -> `connections.py`
+4. Move domain helpers/tools:
+   - `_lookup_domain`, `_domain_summary`, `_domain_action`
+   - list/info/xml/lifecycle/define/undefine tools -> `domains.py`
+5. Move remote host shell helpers:
+   - `_ssh_run`, `_parse_uri_parts`, `_find_isos`, `_scp_between_hosts` -> `remote.py`
+6. Move create/template features:
+   - `TEMPLATES_DIR`, `_load_template`, `_apply_overrides`, `_build_domain_xml`, `_launch_virt_viewer`
+   - `libvirt_list_templates`, `libvirt_create_vm` -> `create_vm.py`
+7. Move delete VM:
+   - `_get_domain_disks`, `libvirt_delete_vm` -> `delete_vm.py`
+8. Move migration:
+   - `_rewrite_disk_paths`, job helpers, `_migrate_vm_offline`, migrate/status tools -> `migration.py`
+9. Build shim:
+   - re-export all symbols currently imported by tests from `server`
+   - ensure `mcp` exists at module scope in `server.py`
+
+### Dependency and import rules
+
+- `app.py` should be imported by tool modules for decorator binding (`from libvirt_mcp.app import mcp`).
+- Avoid circular imports:
+  - shared utilities only in `common.py`, shared mutable state only in `state.py`.
+  - tool modules import from `models/common/state/remote` as needed.
+- Keep helper names unchanged to minimize test churn.
+- Preserve existing docstrings on MCP tool functions.
+
+### Incremental rollout plan (with checkpoints)
+
+Phase 1: Package skeleton + passive shared modules
+- Add `libvirt_mcp/` and create `app.py`, `state.py`, `common.py`, `models.py`.
+- Update imports in one small slice only.
+- Validate: `uv run pytest tests/test_server.py -k "DomainStateStr or FormatError or GetConn or LookupDomain"`
+
+Phase 2: Connections + domain tools
+- Move connection and domain tool code.
+- Validate: `uv run pytest tests/test_server.py`
+
+Phase 3: Remote helpers + create VM
+- Move `remote.py` and `create_vm.py`.
+- Validate: `uv run pytest tests/test_create_vm.py`
+
+Phase 4: Delete VM + migration
+- Move delete + migration modules.
+- Validate: `uv run pytest tests/test_migrate_vm.py`
+
+Phase 5: Shim finalization + full regression
+- Replace `server.py` with compatibility shim and re-exports.
+- Validate:
+  - `uv run pytest`
+  - optional integration: `LIBVIRT_TEST_HOST=... uv run pytest tests/test_integration.py -v`
+
+### `server.py` shim contract
+
+`server.py` must continue exporting at least:
+
+- `mcp`
+- all tool callables
+- all `*Input` models used in tests
+- helper functions referenced by tests:
+  - `_domain_state_str`, `_format_error`, `_domain_summary`, `_get_conn`, `_lookup_domain`
+  - `_load_template`, `_apply_overrides`, `_build_domain_xml`, `_ssh_run`, `_provision_disk`, `_find_isos`, `_launch_virt_viewer`
+  - `_get_domain_disks`, `_rewrite_disk_paths`, `_scp_between_hosts`, `_migrate_vm_offline`
+- state vars used in tests:
+  - `_connections`, `_migration_jobs`
+
+### Risks and mitigations
+
+- Risk: decorator registration drift (tool missing or duplicate).
+  - Mitigation: keep tool defs intact; import all tool modules exactly once from shim/bootstrap path.
+- Risk: circular imports after split.
+  - Mitigation: strict layering (`state/common/models` at base; tools above).
+- Risk: tests mocking `server.<name>` break if symbol not re-exported.
+  - Mitigation: explicit re-export list in `server.py`; run unit tests after each phase.
+- Risk: accidental behavior change in response text.
+  - Mitigation: move code first, refactor internals second; keep strings unchanged.
+
+### Done criteria
+
+- All existing unit tests pass with no weakening.
+- Optional integration tests pass when host is available.
+- `server.py` works as:
+  - import surface for current tests/consumers
+  - script entrypoint
+  - `pyproject.toml` script target unchanged (`server:mcp.run`)
+- `server.py` reduced to shim/exports only; core logic lives in `libvirt_mcp/` modules.
