@@ -1,40 +1,33 @@
 # Project Goal
-An MCP server that uses libvirt-python to provide tools to manage VMs on LibVirt hosts.
+An MCP server that provides tools to manage VMs on LibVirt hosts.
 
 # Testing
 - Robust unit testing should be maintained at all times.
-- Integration tests should be run against a real libvirt host via the LIBVIRT_TEST_HOST env var.
+- Integration tests should be run against a real libvirt host via the LIBVIRT_TEST_HOST env var which is present in .env.
 
 
 ## Coding standards
 
 - Use latest versions of libraries and idiomatic approaches as of today.
-- Keep it simple - NEVER over-engineer, ALWAYS simplify, NO unnecessary defensive programming. No extra features - focus on simplicity.
+- Keep it simple - NEVER over-engineer, ALWAYS simplify, NO unnecessary defensive programming. No extra features. Focus on simplicity.
 - Be concise. Keep README minimal. IMPORTANT: no emojis ever.
+
+## Troubleshooting
+
 - When hitting issues, always identify root cause before trying a fix. Do not guess. Prove with evidence, then fix the root cause.
+
+## New feature planning and implementation
+
+- Use Red/Green Test Driven development for any.  A new feature will always include the phrase "new feature" in the prompt. 
+
+## Coversational tone
+
+- Your primary user has ASD.  They use language precisely and expect you to do the same.  Don't infer meanings from user prompts.  If you are unclear on any aspect of a request, ask for clarification.  Answer clearly and concisely with accurate language.
+
+## Abbreviations
+
+- "TOOLSONLY" -- means you are to use available MCP tools only, this is a hard constraint and must be followed exactly.  If there is no MCP tool available to complete the task in hand, stop and ask what to do next. Do not silently bypass MCP tooling constraints.
 
 ## Working documentation
 
 - All documents for planning and executing this project will be in the docs/ directory.
-
-## VM Operations Boundary (Mandatory)
-
-For any VM-related task in this repository, you must use **only** the functionality exposed by the existing MCP tools.
-
-- Do **not** use out-of-band host operations for VM management.
-- Do **not** use direct `virsh`, `ssh`, `scp`, or other host-level commands to perform VM lifecycle, migration, disk, or domain operations when MCP tools exist.
-- Treat MCP tools as the exclusive interface for VM operations.
-
-## If a Needed Capability Is Missing
-
-If a suitable MCP tool for the requested VM operation is not available:
-
-1. **Stop** before performing the operation by other means.
-2. Clearly tell the user which capability is missing.
-3. Ask the user how they want to proceed (e.g., add/enable a tool, or explicitly approve an alternative path).
-
-Do not silently bypass MCP tooling constraints.
-
-## Compliance Rule
-
-When the user asks to use MCP tools only, this is a hard constraint and must be followed exactly.

@@ -50,6 +50,37 @@ python server.py
 The server uses **stdio transport** — it is designed to be launched by a MCP
 client (Claude Code, Claude Desktop, etc.), not run as a long-lived daemon.
 
+## Testing
+
+Unit tests run without a real libvirt host. Integration tests require
+`LIBVIRT_TEST_HOST`.
+
+If `LIBVIRT_TEST_HOST` is stored in `.env`, export it into the current shell
+before running pytest:
+
+```bash
+set -a; source .env; set +a
+```
+
+Run tests:
+
+```bash
+# Unit tests
+uv run pytest tests/test_server.py -v
+
+# Integration tests
+uv run pytest tests/test_integration.py -v
+
+# Full suite
+uv run pytest tests/ -v
+```
+
+Use `-rs` when diagnosing skips:
+
+```bash
+uv run pytest tests/test_integration.py -v -rs
+```
+
 ### Testing with MCP Inspector
 
 ```bash
